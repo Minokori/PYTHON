@@ -9,7 +9,8 @@ from modelsolver.abc.config import DataConfig
 
 
 class IDataset(ABC):
-    """对数据集的抽象接口"""
+    """对数据集的抽象接口
+    """
     @abstractmethod
     def __init__(self, config: DataConfig): ...
     @abstractmethod
@@ -19,7 +20,7 @@ class IDataset(ABC):
     @abstractmethod
     def __add__(self, other: Self) -> Self: ...
 
-
+# TODO 抽成 dict 形式 __getitem__(self, mode="调用的函数")-> Callable
 class IDataProcesser(ABC):
     @abstractmethod
     def collate_fn(self, batch: Sequence) -> tuple[list[Tensor], list[Tensor]]:

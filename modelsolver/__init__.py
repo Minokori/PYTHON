@@ -4,15 +4,16 @@
 import os
 from dataclasses import is_dataclass
 from math import floor, log
-from typing import Any
+from typing import Any, Literal, Self
 
+import torch
 from clean_ioc import Container, DependencySettings, Lifespan
 from clean_ioc.registration_filters import with_name
 from matplotlib import pyplot as plt
 from matplotlib.font_manager import FontProperties
-from numpy import float32
+from numpy import float32, mean
 from numpy.typing import NDArray
-from torch import load, no_grad, save
+from torch import Tensor, load, no_grad, randn_like, save
 from torch.autograd import set_detect_anomaly
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
@@ -23,6 +24,14 @@ from modelsolver.abc.config import DataConfig, HyperParameterConfig
 from modelsolver.abc.data import IDataLoader, IDataProcesser, IDataset
 from modelsolver.abc.functional import ILoss, IOptimizer, IScheduler
 from modelsolver.abc.model import IModel
+from modelsolver.abc.rl.data import IEnvironmentConverter, IReplayBuffer
+from modelsolver.abc.rl.environment import IEnvironment
+from modelsolver.abc.rl.loss import IAgentLoss
+from modelsolver.abc.rl.model import IActor, IAgentModel, ICritic
+from modelsolver.implement.optimizer.adamw import AdamWOptimizer
+from modelsolver.implement.rl.loss import DefaultAgentLoss
+from modelsolver.implement.rl.model import NullActor, NullCritic
+from modelsolver.implement.scheduler.nullstep import NullScheduler
 
 
 # endregion
@@ -49,21 +58,33 @@ class ModelSolver(Container):
         # dataloader 缓存
         self._dataloaders: list[IDataLoader] = []
 
+        # 一些组件的默认实现
+        self.add_optimizer(AdamWOptimizer)
+        self.add_lr_scheduler(NullScheduler)
+
     # region 注册损失函数, 优化器, 学习率调度器, 配置项, 数据处理器, 使 ioc 更易用
     # TODO 具名loss, optimizer, scheduler, 因为RL有可能会有多个
-    def add_loss_function(self, loss_function: type[ILoss]):
+    def add_loss_function(self, loss_function: type[ILoss], name: str | None = None):
         """注册损失函数"""
-        self.register(ILoss, loss_function, lifespan=Lifespan.singleton)
+        self.register(ILoss, loss_function, lifespan=Lifespan.singleton, name=name)
         return self
 
-    def add_optimizer(self, optimizer: type[IOptimizer]):
-        """注册优化器"""
-        self.register(IOptimizer, implementation_type=optimizer, lifespan=Lifespan.singleton)
+    def add_optimizer(self, optimizer: type[IOptimizer], name: str | None = None):
+        """注册优化器.
+
+        + 若没有指定优化器, 则使用 AdamW 作为默认优化器.
+        """
+        self.register(IOptimizer, implementation_type=optimizer, lifespan=Lifespan.singleton, name=name)
         return self
 
-    def add_lr_scheduler(self, lr_scheduler: type[IScheduler]):
+    # TODO lr 引用 opt, 当 opt有多个时无法区分
+    def add_lr_scheduler(self, lr_scheduler: type[IScheduler], *name: str | None):
         """注册学习率调度器"""
-        self.register(IScheduler, lr_scheduler, lifespan=Lifespan.singleton)
+        if not name:
+            self.register(IScheduler, lr_scheduler, lifespan=Lifespan.singleton)
+        else:
+            for n in name:
+                self.register(IScheduler, lr_scheduler, lifespan=Lifespan.singleton, name=n)
         return self
 
     def add_config(self, config: Any, name: str | None = None):
@@ -91,13 +112,18 @@ class ModelSolver(Container):
                 self.register(IModel, instance=model, lifespan=Lifespan.singleton)
         return self
 
-    def add_model_component(self, module: type, implementation: type, name: str, singleton: bool = False):
+    def add_model_component(self, module: type, implementation: type, name: str | None = None, singleton: bool = False):
         """注册模型组件, 通过 ioc 容器构建模型实例"""
-        self._model_builder.register(module,
-                                     implementation,
-                                     lifespan=Lifespan.singleton if singleton else Lifespan.transient, dependency_config={
-                                         "config": DependencySettings(
-                                             filter=with_name(name))})
+        if name:
+            self._model_builder.register(module,
+                                         implementation,
+                                         lifespan=Lifespan.singleton if singleton else Lifespan.transient, dependency_config={
+                                             "config": DependencySettings(
+                                                 filter=with_name(name))})
+        else:
+            self._model_builder.register(module,
+                                         implementation,
+                                         lifespan=Lifespan.singleton if singleton else Lifespan.transient)
         return self
 
     def add_model_config(self, config: Any, name: str | None = None):
@@ -401,5 +427,197 @@ class ModelSolver(Container):
         plt.legend(prop=self.font)  # type: ignore
         plt.show()
     # endregion
+
+
+class AgentModelSolver(ModelSolver):
+
+    # region environment 相关函数
+    def __init__(self):
+        super().__init__()
+        self._environment_builder = Container()
+
+        # 默认 Actor 和 Critic 的占位符
+        self.add_model_component(IActor, NullActor)
+        self.add_model_component(ICritic, NullCritic)
+
+        # 默认的 optimizer
+        self.add_optimizer(AdamWOptimizer, name="actor")
+        self.add_optimizer(AdamWOptimizer, name="critic")
+
+        # 默认的 replay buffer
+        self.add_replay_buffer(IReplayBuffer)
+
+        # 默认的 loss function
+        self.add_loss_function(DefaultAgentLoss)
+
+    def add_model(self, model: IAgentModel | type[IAgentModel]):
+        """添加智能体模型"""
+        return super().add_model(model)
+
+    def add_environment_config(self, config: Any) -> Self:
+        assert is_dataclass(config), "config must be a dataclass"
+        self._environment_builder.register(type(config), instance=config, lifespan=Lifespan.singleton)
+        return self
+
+    def add_environment(self, environment: IEnvironment | type[IEnvironment]) -> Self:
+        match environment:
+            case type():
+                self._environment_builder.register(IEnvironment, implementation_type=environment, lifespan=Lifespan.singleton)
+            case IEnvironment():
+                self._environment_builder.register(IEnvironment, instance=environment, lifespan=Lifespan.singleton)
+        return self
+
+    def add_environment_converter(self, converter: IEnvironmentConverter | type[IEnvironmentConverter]) -> Self:
+        match converter:
+            case type():
+                self.register(IEnvironmentConverter, implementation_type=converter, lifespan=Lifespan.singleton)
+            case IEnvironmentConverter():
+                self.register(IEnvironmentConverter, instance=converter, lifespan=Lifespan.singleton)
+        return self
+
+    def add_replay_buffer(self, buffer: IReplayBuffer | type[IReplayBuffer]) -> Self:
+        match buffer:
+            case type():
+                self.register(IReplayBuffer, implementation_type=buffer, lifespan=Lifespan.singleton)
+            case IReplayBuffer():
+                self.register(IReplayBuffer, instance=buffer, lifespan=Lifespan.singleton)
+        return self
+
+    @property
+    def environment(self) -> IEnvironment:
+        if self.has_registration(IEnvironment):
+            return self.resolve(IEnvironment)
+        else:
+            environment = self._environment_builder.resolve(IEnvironment).build_environment()
+            self.register(IEnvironment, instance=environment)
+            return environment
+
+    @property
+    def model(self) -> IAgentModel:
+        return super().model  # type: ignore
+
+    @property
+    def replay_buffer(self) -> IReplayBuffer:
+        return self.resolve(IReplayBuffer)
+
+    @property
+    def converter(self) -> IEnvironmentConverter:
+        return self.resolve(IEnvironmentConverter)
+
+    @property
+    def actor_optimizer(self) -> Optimizer:
+        return self.resolve(IOptimizer, filter=with_name("actor")).optimizer
+
+    @property
+    def critic_optimizer(self) -> Optimizer:
+        return self.resolve(IOptimizer, filter=with_name("critic")).optimizer
     # endregion
-    # endregion
+
+    @property
+    def loss_function(self) -> IAgentLoss:
+        return super().loss_function  # type: ignore
+
+    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg"] = "behavior_cloning"):
+        self.model.train()
+        match method:
+            case "behavior_cloning":
+                for epoch in range(self.config.epoch):
+                    self.train_single_step_through_behavior_cloning()
+                    if print_interval > 0 and epoch % print_interval == 0:
+                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+            case "ddpg":
+                for epoch in range(self.config.epoch):
+                    with torch.autograd.set_detect_anomaly(True):
+                        self.train_single_epoch_through_ddpg()
+                        if print_interval > 0 and epoch % print_interval == 0:
+                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+
+    def train_single_step_through_behavior_cloning(self):
+
+        loss_on_total_dataset = []
+
+        for batch in self.train_dataloader:
+            self.actor_optimizer.zero_grad()
+            states, actions = self.data_processer.preprocess(batch)
+            predicted_actions = self.model(states)
+            loss = self.loss_function(predicted_actions, actions, "behavior_clone")
+            loss.backward()
+            loss_on_total_dataset.append(loss.item())
+            self.actor_optimizer.step()
+
+        self.scheduler.step()
+        self.train_losses.append(mean(loss_on_total_dataset).item())
+
+    def train_single_epoch_through_ddpg(self):
+        # 清空梯度
+        self.critic_optimizer.zero_grad()
+        self.actor_optimizer.zero_grad()
+
+        # 重置环境
+        state, r, done, timeout, info = self.environment.reset()
+
+        # 时间步 1 -> T
+        while not done and not timeout:
+
+            # 将环境返回的观测值转换为模型可接受的格式
+            state = self.converter.convert("s", state, "simulation", "model")
+
+            # 模型 actor 采取动作
+            action = self.model(state)
+
+            action = self._generate_action_noise(action).to(action)
+
+            # 将模型输出的动作转换为环境可接受的格式
+            # 在环境中执行动作, 获取下一个观测值和奖励
+            next_state, r, done, timeout, info = self.environment.step(self.converter.convert("a", action, "model", "simulation"))
+
+            # 将数据存入回放池
+            self.replay_buffer.append(state, action, r, self.converter.convert("s", next_state, "simulation", "model"), done)
+
+            # 从回放池中采样一批数据, 训练模型
+            for batch in self.replay_buffer:
+
+                # 解压数据
+                states, actions, rewards, next_states, dones = batch
+
+                # 训练 Critic 网络
+                # 计算 t+1 时的 目标 Q 值
+                y = rewards.cuda() + self.config.gamma * self.model(next_states.cuda(), None, "target_q")
+                # 计算当前的 Q 值
+                q = self.model(states.cuda(), actions.cuda(), "q")
+                # 计算 Critic 损失并更新参数
+                critic_loss = self.loss_function(y, q, "ddpg_critic")
+                critic_loss.backward()
+                self.critic_optimizer.step()
+
+                # 训练 Actor 网络
+                qs = self.model(states.cuda(), None, "q")
+                actor_loss = self.loss_function(qs, None, target="ddpg_actor")
+                actor_loss.backward()
+                self.actor_optimizer.step()
+                break
+            state = next_state
+
+            self.model.soft_update("actor", "critic")
+
+    @no_grad()
+    def evalute_on_environment(self,):
+        self.model.eval()
+        ob, r, done, timeout, info = self.environment.reset()
+        ob_list = []
+        done = False
+        timeout = False
+        while not done and not timeout:
+            state: Tensor = self.converter.convert("s", ob, "simulation", "realworld")  # type: ignore
+            action = self.model(state)  # type: ignore
+            action: NDArray[float32] = self.converter.convert("a", action, "realworld", "simulation")  # type: ignore
+            ob, reward, done, timeout, info = self.environment.step(action)
+            ob_list.append(ob)
+        return ob_list
+
+    def _generate_action_noise(self, action: Tensor, scale: float = 0.05) -> Tensor:
+        # 计算动作的均值和标准差
+        action_mean, action_std = self.replay_buffer.get_action_param()
+        # 产生噪声
+        noise = action_std.cuda() * randn_like(action) * scale
+        return action + noise
