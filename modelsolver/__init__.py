@@ -6,7 +6,6 @@ from dataclasses import is_dataclass
 from math import floor, log
 from typing import Any, Literal, Self
 
-import torch
 from clean_ioc import Container, DependencySettings, Lifespan
 from clean_ioc.registration_filters import with_name
 from matplotlib import pyplot as plt
@@ -17,22 +16,23 @@ from torch import Tensor, load, no_grad, randn_like, save
 from torch.autograd import set_detect_anomaly
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, random_split
 
 from modelsolver import abc
 from modelsolver.abc.config import DataConfig, HyperParameterConfig
-from modelsolver.abc.data import IDataLoader, IDataProcesser, IDataset
-from modelsolver.abc.functional import ILoss, IOptimizer, IScheduler
-from modelsolver.abc.model import IModel
-from modelsolver.abc.rl.data import IReplayBuffer
-from modelsolver.abc.rl.environment import IEnvironment
-from modelsolver.abc.rl.loss import IAgentLoss
-from modelsolver.abc.rl.model import IActor, IAgentModel, ICritic
-from modelsolver.abc.rl.optimizier import IAgentOptimizer
+from modelsolver.abc.data import (IDataLoader, IDataProcesser, IDataset,
+                                  IReplayBuffer)
+from modelsolver.abc.environment import IEnvironment
+from modelsolver.abc.functional import (IAgentLoss, IAgentOptimizer,
+                                        IAgentScheduler, ILoss, IOptimizer,
+                                        IScheduler)
+from modelsolver.abc.model import IActor, IAgentModel, ICritic, IModel
 from modelsolver.implement.optimizer.adamw import AdamWOptimizer
-from modelsolver.implement.rl.loss import DefaultAgentLoss
-from modelsolver.implement.rl.model import NullActor, NullCritic
-from modelsolver.implement.rl.optimizer import DefaultAgentOptimizer
+from modelsolver.implement.loss import DefaultAgentLoss
+from modelsolver.implement.model import NullActor, NullCritic
+from modelsolver.implement.optimizer import DefaultAgentOptimizer
+from modelsolver.implement.scheduler.multistep import AgentMultiStepScheduler
 from modelsolver.implement.scheduler.nullstep import NullScheduler
 
 
@@ -456,6 +456,9 @@ class AgentModelSolver(ModelSolver):
         # 默认的 loss function
         self.add_loss_function(DefaultAgentLoss)
 
+        # 默认的 scheduler
+        self.add_lr_scheduler(AgentMultiStepScheduler)
+
     def add_model(self, model: IAgentModel | type[IAgentModel]):
         """添加智能体模型"""
         return super().add_model(model)
@@ -511,8 +514,21 @@ class AgentModelSolver(ModelSolver):
         return optimizer.critic_optimizer
 
     @property
+    def actor_scheduler(self) -> _LRScheduler:
+        scheduler = self.resolve(IScheduler)
+        assert isinstance(scheduler, IAgentScheduler)
+        return scheduler.actor_scheduler
+
+    @property
+    def critic_scheduler(self) -> _LRScheduler:
+        scheduler = self.resolve(IScheduler)
+        assert isinstance(scheduler, IAgentScheduler)
+        return scheduler.critic_scheduler
+    @property
     def loss_function(self) -> IAgentLoss:
-        return super().loss_function  # type: ignore
+        loss_function = super().loss_function
+        assert isinstance(loss_function, IAgentLoss)
+        return loss_function
 
     @property
     def train_rewards(self) -> list[float]:
@@ -521,29 +537,38 @@ class AgentModelSolver(ModelSolver):
     @property
     def train_actor_losses(self) -> list[float]:
         return self.stats["actor_losses"]
-
     @property
     def train_critic_losses(self) -> list[float]:
         return self.stats["critic_losses"]
     # endregion
     def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg"] = "behavior_cloning"):
         self.model.train()
+        # 清空 scheduler 计数器
+        self.actor_scheduler.last_epoch = -1
+        self.critic_scheduler.last_epoch = -1
         match method:
+
             case "behavior_cloning":
+
                 for epoch in range(self.config.epoch):
                     self.train_single_step_through_behavior_cloning()
                     if print_interval > 0 and epoch % print_interval == 0:
                         print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+
                 self.model.soft_update_target_net("actor", tau=1.0)
+
             case "ddpg":
                 for epoch in range(self.config.epoch):
-                    with torch.autograd.set_detect_anomaly(True):
-                        self.train_single_epoch_through_ddpg()
-                        if print_interval > 0 and epoch % print_interval == 0:
-                            if len(self.train_actor_losses) > 0:
-                                print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
-                                    f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
-                                    f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
+                    has_train = False
+
+                    while not has_train:
+                        has_train = self.train_single_epoch_through_ddpg()
+
+                    if print_interval > 0 and epoch % print_interval == 0:
+                        if len(self.train_actor_losses) > 0:
+                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
+                                  f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
+                                  f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
 
     def train_single_step_through_behavior_cloning(self):
 
@@ -560,41 +585,46 @@ class AgentModelSolver(ModelSolver):
 
             loss_on_total_dataset.append(loss.item())
 
-        self.scheduler.step()
+        self.actor_scheduler.step()
         self.train_losses.append(mean(loss_on_total_dataset).item())
 
-    def train_single_epoch_through_ddpg(self):
-        # 重置环境
-        state, reward, done, timeout, info = self.environment.reset()
-        total_r = reward
+    def train_single_epoch_through_ddpg(self) -> bool:
+
+        # region 单步训练前准备
+        state, reward, done, timeout, info = self.environment.reset()  # 重置环境
+        total_r = reward  # 累计奖励初始化
+        has_train = False  # 标志位, 表示是否完成了一次训练. (若仅收集数据, 则为 False)
+        # endregion
+
+
         # 时间步 1 -> T
         while not done and not timeout:
-            # 模型 actor 采取动作
-            action = self.model(state.cuda())
-            action = self._generate_action_noise(action).cuda()
 
-            # 将模型输出的动作转换为环境可接受的格式
-            # 在环境中执行动作, 获取下一个观测值和奖励
-            next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
-
-            # 将数据存入回放池
-            self.replay_buffer.append(state, action, reward, next_state, done)
-
-            # 更新状态
-            state = next_state
-
-            # 累计奖励
-            total_r += reward
+            with no_grad():  # 和环境交互, 获得 (s, a, r, s', done) -> replay_buffer
+                # 模型 actor 采取动作, 并添加噪声
+                action = self.model(state.cuda())
+                action = self._generate_action_noise(action).cuda()
+                # 在环境中执行动作, 获取下一个观测值和奖励
+                next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
+                # 将数据存入回放池
+                self.replay_buffer.append(state, action, reward, next_state, done)
+                # 更新状态
+                state = next_state
+                # 累计奖励
+                total_r += reward
 
             # 从回放池中采样一批数据, 训练模型
-            if len(self.replay_buffer) > self.replay_buffer.config.batch_size:
+            if self.replay_buffer.can_sample:
+
                 # 解压数据
                 states, actions, rewards, next_states, dones = self.replay_buffer.sample()
 
                 # region 训练 Critic 网络
                 # 计算 t+1 时的 目标 Q 值
                 with no_grad():
-                    q_next = rewards.cuda() + self.config.gamma_rl * self.model(next_states.cuda(), None, "target_q") * (1 - dones.float().cuda())
+                    q_next = rewards.cuda() + \
+                        self.config.gamma_rl * self.model(next_states.cuda(), None, "target_q") * (1 - dones.float().cuda())
+
                 # 计算当前的 Q 值
                 q = self.model(states.cuda(), actions.cuda(), "q")
 
@@ -624,11 +654,17 @@ class AgentModelSolver(ModelSolver):
 
                 # 软更新目标网络
                 self.model.soft_update_target_net("actor", "critic")
+
+                # 设置标志位
+                has_train = True
+
+                # 更新学习率
+                self.actor_scheduler.step()
+                self.critic_scheduler.step()
             else:
-                pass
+                has_train = False
 
-
-
+        return has_train
 
     @no_grad()
     def evalute_on_environment(self,):
@@ -646,11 +682,5 @@ class AgentModelSolver(ModelSolver):
     def _generate_action_noise(self, action: Tensor, scale: float = 0.05) -> Tensor:
         """TODO: 根据动作的标准差生成噪声"""
 
-        noise = (randn_like(action) * 2 - 1) * scale
-        return action + noise
-
-        # 计算动作的均值和标准差
-        action_mean, action_std = self.replay_buffer.get_action_mean_std()
-        # 产生噪声
-        noise = action_std.cuda() * randn_like(action) * scale
-        return action + noise
+        noise = randn_like(action) * scale
+        return action + noise.detach()

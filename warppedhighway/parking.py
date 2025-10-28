@@ -16,7 +16,7 @@ from numpy.linalg import norm
 from numpy.typing import NDArray
 from torch import Tensor, concatenate, from_numpy, tensor
 
-from modelsolver.abc.rl.environment import IEnvironment
+from modelsolver.abc.environment import IEnvironment
 
 from .config import (GoalModel, ObstacleModel, RoadNetworkModel,
                      StraightLaneModel, VehicleModel)

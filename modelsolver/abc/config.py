@@ -45,3 +45,20 @@ class DataConfig:
         t_int = floor(t)
         if t_int < t:
             logging.warning(f"批量大小 {self.batch_size} 不是 2 的指数倍, 考虑将其设置为 {exp2(t_int)} 或 {exp2(t_int + 1)}")
+
+
+# region RL
+@dataclass_json
+@dataclass
+class ReplayBufferConfig:
+    capacity: int
+    """经验回放缓冲区的容量"""
+    state_dim: int
+    """状态空间维度. 状态的形状为 (state_dim,)"""
+    action_dim: int
+    """动作空间维度. 动作的形状为 (action_dim,)"""
+    minimal_capacity: int
+    """在开始采样之前, 经验回放池中至少需要存储的序列数"""
+    batch_size: int
+    """每个采样批次的大小"""
+# endregion RL

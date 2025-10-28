@@ -1,7 +1,6 @@
-
 from torch import Tensor
 
-from modelsolver.abc.rl.model import IActor, ICritic
+from modelsolver.abc.model import IActor, ICritic
 
 
 class NullActor(IActor):
