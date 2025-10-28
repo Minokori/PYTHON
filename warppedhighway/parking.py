@@ -14,7 +14,7 @@ from highway_env.vehicle.objects import Landmark, Obstacle
 from numpy import float32, rad2deg, zeros_like
 from numpy.linalg import norm
 from numpy.typing import NDArray
-from torch import Tensor
+from torch import Tensor, concatenate, from_numpy, tensor
 
 from modelsolver.abc.rl.environment import IEnvironment
 
@@ -119,7 +119,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
                 1,
                 1
             ],
-            "normalize": False
+            "normalize": True
         },
         "action": {
             "type": "ContinuousAction"
@@ -142,13 +142,13 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         "reward_weights": [
             1.0,
             1.0,
-            0,
-            0,
-            0.02,
-            0.02
+            0.01,
+            0.01,
+            0.05,
+            0.05
         ],
         "success_goal_reward": 0.12,
-        "collision_reward": -5,
+        "collision_reward": -10,
         "steering_range": 0.7853981633974483,
         "duration": 100,
         "controlled_vehicles": 1,
@@ -159,6 +159,13 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
     @classmethod
     def default_config(cls) -> ParkingEnvironmentConfig:
         return cls.DEFAULT_CONFIG.copy()
+
+    if TYPE_CHECKING:
+        observation_type_parking: KinematicsGoalObservation
+        last_observation: ObservationDict
+        """上一时刻的观测"""
+        last_action: Tensor
+        """上一时刻的动作"""
     # endregion
 
     def __init__(self, network: RoadNetworkModel = RoadNetworkModel()):
@@ -186,18 +193,14 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         if config:
             c.update(config)
         super().__init__(dict(c), render_mode)
+        self.define_spaces()
         observation = self.observation_type.observe()
         self.last_observation = observation
-        self.last_action = zeros_like(self.action_space.sample())
+        self.last_action = from_numpy(zeros_like(self.action_space.sample()))
         return self
     # endregion
 
-    # region override public method
-    def define_spaces(self) -> None:
-        super().define_spaces()
-        self.observation_type_parking: KinematicsGoalObservation = KinematicsGoalObservation(self, **self.config["observation"])
-
-    def step(self, action: NDArray[float32] | Tensor) -> tuple[NDArray[float32], float, bool, bool, dict]:
+    def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         """
         + 在时间步 t 环境处于状态 s_t，agent 根据观察 o_t 选动作 a_t；
         + 调用 env.step(a_t) 后，环境根据动力学转移到下一个状态 s_{t+1}，并返回与 s_{t+1} 对应的观测 o_{t+1}、奖励 r_t、终止标志 done 和 info。
@@ -215,18 +218,17 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         # 记录当前动作和观测
         action, observation = action, self.observation_type.observe()
 
-        if isinstance(action, Tensor):
-            action = action.numpy()
+        a = action.cpu().detach().numpy()
         # 执行动作
         self.time += 1 / self.config["policy_frequency"]
-        self._simulate(action)
+        self._simulate(a)
 
         # 计算奖励等
         next_observation: ObservationDict = self.observation_type.observe()
-        reward = self._reward(action, last_action, observation, last_observation)
+        reward = self._reward(a, last_action.numpy(), observation, last_observation)
         terminated = self._is_terminated()
         truncated = self._is_truncated()
-        info = self._info(next_observation, action)
+        info = self._info(next_observation, a)
 
         if self.render_mode == "human":
             self.render()
@@ -235,14 +237,14 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         self.last_observation: ObservationDict = observation
         self.last_action = action
 
-        return next_observation["observation"], reward, terminated, truncated, info
+        return self._convert_observation(next_observation).float(), tensor(
+            reward).float().reshape(1), tensor(terminated).float().reshape(1), truncated, info
 
-    def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[NDArray[float32], float, bool, bool, dict]:
+    def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         observation, info = super(ParkingEnv, self).reset(seed=seed, options=options)
-        self.last_observation = observation
-        self.last_action = zeros_like(self.action_space.sample())
-        return observation["observation"], 0, False, False, info
-
+        self.last_observation: ObservationDict = observation
+        self.last_action = from_numpy(zeros_like(self.action_space.sample()))
+        return self._convert_observation(observation).float(), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
     # endregion
 
     # region override private method
@@ -269,7 +271,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
 
         heading_error = abs(rad2deg(heading - goal_heading))
 
-        return bool((position_error < 0.25) and (heading_error < 5))  # and (speed_error < 0.05)
+        return bool((position_error < 0.05) and (heading_error < 5))  # and (speed_error < 0.05)
 
     def _reward(
             self,
@@ -280,13 +282,12 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         # 1 累计奖励，根据当前的状态（x,y,vx,vy,cosh,sinh）和期望的状态计算的累计奖励 [-1,0]
         computed_reward = self.compute_reward(observation['achieved_goal'], observation['desired_goal'], {})
         # 2 碰撞惩罚 [-5 | 0]
-        collison_reward = - self.config['collision_reward'] * sum(v.crashed for v in self.controlled_vehicles)
+        collison_reward = self.config['collision_reward'] * sum(v.crashed for v in self.controlled_vehicles)
         # 3 动作惩罚 (动作变化小有奖励，动作变化大惩罚) [-1,0]
-        action_reward = - 0.1 * norm(action - last_action, ord=2)
+        # action_reward = - norm(action - last_action, ord=2)
         # 4 位移奖励
-        move_reward = norm(last_observation["achieved_goal"][0:2] - last_observation["desired_goal"][0:2]) - \
-            norm(observation["achieved_goal"][0:2] - observation["desired_goal"][0:2]) / 2 - 0.5
-        return computed_reward + collison_reward + action_reward * 0.1 + move_reward * 0.1
+        # move_reward = norm(last_observation["achieved_goal"][0:2] - last_observation["desired_goal"][0:2]) - norm(observation["achieved_goal"][0:2] - observation["desired_goal"][0:2]) / 2 - 0.5
+        return computed_reward + collison_reward # + action_reward * 0.1 + move_reward * 0.1
     # endregion
 
     # region 创建路网
@@ -350,3 +351,12 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
             self.road.objects.append(obstacle)
         return self
     # endregion
+
+    def _convert_observation(self, observation: ObservationDict) -> Tensor:
+        """将 highway-env 返回的字典格式观测转为 Tenor"""
+        ob = observation["observation"]
+        achieved_goal = observation["achieved_goal"]
+
+        # assert ob == achieved_goal
+        desired_goal = observation["desired_goal"]
+        return concatenate([from_numpy(ob), from_numpy(desired_goal)], dim=0)

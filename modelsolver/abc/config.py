@@ -15,6 +15,7 @@ class HyperParameterConfig:
     eps: float = 1e-8
     milestones: list[int] = field(default_factory=lambda: [100, 150, 200])
     gamma: float = 0.1
+    gamma_rl: float = 0.98
     epoch: int = 500
 
 

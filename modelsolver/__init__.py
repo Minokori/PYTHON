@@ -24,13 +24,15 @@ from modelsolver.abc.config import DataConfig, HyperParameterConfig
 from modelsolver.abc.data import IDataLoader, IDataProcesser, IDataset
 from modelsolver.abc.functional import ILoss, IOptimizer, IScheduler
 from modelsolver.abc.model import IModel
-from modelsolver.abc.rl.data import IEnvironmentConverter, IReplayBuffer
+from modelsolver.abc.rl.data import IReplayBuffer
 from modelsolver.abc.rl.environment import IEnvironment
 from modelsolver.abc.rl.loss import IAgentLoss
 from modelsolver.abc.rl.model import IActor, IAgentModel, ICritic
+from modelsolver.abc.rl.optimizier import IAgentOptimizer
 from modelsolver.implement.optimizer.adamw import AdamWOptimizer
 from modelsolver.implement.rl.loss import DefaultAgentLoss
 from modelsolver.implement.rl.model import NullActor, NullCritic
+from modelsolver.implement.rl.optimizer import DefaultAgentOptimizer
 from modelsolver.implement.scheduler.nullstep import NullScheduler
 
 
@@ -429,11 +431,16 @@ class ModelSolver(Container):
     # endregion
 
 
+# TODO scheduler 区分 actor 和 critic
 class AgentModelSolver(ModelSolver):
 
-    # region environment 相关函数
+    # region environment 相关函数, override 函数签名 (提供类型检查)
     def __init__(self):
         super().__init__()
+        # 初始化训练和测试奖励列表
+        self.stats["rewards"] = []
+        self.stats["actor_losses"] = []
+        self.stats["critic_losses"] = []
         self._environment_builder = Container()
 
         # 默认 Actor 和 Critic 的占位符
@@ -441,8 +448,7 @@ class AgentModelSolver(ModelSolver):
         self.add_model_component(ICritic, NullCritic)
 
         # 默认的 optimizer
-        self.add_optimizer(AdamWOptimizer, name="actor")
-        self.add_optimizer(AdamWOptimizer, name="critic")
+        self.add_optimizer(DefaultAgentOptimizer)
 
         # 默认的 replay buffer
         self.add_replay_buffer(IReplayBuffer)
@@ -454,9 +460,9 @@ class AgentModelSolver(ModelSolver):
         """添加智能体模型"""
         return super().add_model(model)
 
-    def add_environment_config(self, config: Any) -> Self:
-        assert is_dataclass(config), "config must be a dataclass"
-        self._environment_builder.register(type(config), instance=config, lifespan=Lifespan.singleton)
+    def add_environment_config(self, environment_config: Any) -> Self:
+        assert is_dataclass(environment_config), "config must be a dataclass"
+        self._environment_builder.register(type(environment_config), instance=environment_config, lifespan=Lifespan.singleton)
         return self
 
     def add_environment(self, environment: IEnvironment | type[IEnvironment]) -> Self:
@@ -465,14 +471,6 @@ class AgentModelSolver(ModelSolver):
                 self._environment_builder.register(IEnvironment, implementation_type=environment, lifespan=Lifespan.singleton)
             case IEnvironment():
                 self._environment_builder.register(IEnvironment, instance=environment, lifespan=Lifespan.singleton)
-        return self
-
-    def add_environment_converter(self, converter: IEnvironmentConverter | type[IEnvironmentConverter]) -> Self:
-        match converter:
-            case type():
-                self.register(IEnvironmentConverter, implementation_type=converter, lifespan=Lifespan.singleton)
-            case IEnvironmentConverter():
-                self.register(IEnvironmentConverter, instance=converter, lifespan=Lifespan.singleton)
         return self
 
     def add_replay_buffer(self, buffer: IReplayBuffer | type[IReplayBuffer]) -> Self:
@@ -501,22 +499,33 @@ class AgentModelSolver(ModelSolver):
         return self.resolve(IReplayBuffer)
 
     @property
-    def converter(self) -> IEnvironmentConverter:
-        return self.resolve(IEnvironmentConverter)
-
-    @property
     def actor_optimizer(self) -> Optimizer:
-        return self.resolve(IOptimizer, filter=with_name("actor")).optimizer
+        optimizer = self.resolve(IOptimizer)
+        assert isinstance(optimizer, IAgentOptimizer)
+        return optimizer.actor_optimizer
 
     @property
     def critic_optimizer(self) -> Optimizer:
-        return self.resolve(IOptimizer, filter=with_name("critic")).optimizer
-    # endregion
+        optimizer = self.resolve(IOptimizer)
+        assert isinstance(optimizer, IAgentOptimizer)
+        return optimizer.critic_optimizer
 
     @property
     def loss_function(self) -> IAgentLoss:
         return super().loss_function  # type: ignore
 
+    @property
+    def train_rewards(self) -> list[float]:
+        return self.stats["rewards"]
+
+    @property
+    def train_actor_losses(self) -> list[float]:
+        return self.stats["actor_losses"]
+
+    @property
+    def train_critic_losses(self) -> list[float]:
+        return self.stats["critic_losses"]
+    # endregion
     def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg"] = "behavior_cloning"):
         self.model.train()
         match method:
@@ -525,80 +534,101 @@ class AgentModelSolver(ModelSolver):
                     self.train_single_step_through_behavior_cloning()
                     if print_interval > 0 and epoch % print_interval == 0:
                         print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+                self.model.soft_update_target_net("actor", tau=1.0)
             case "ddpg":
                 for epoch in range(self.config.epoch):
                     with torch.autograd.set_detect_anomaly(True):
                         self.train_single_epoch_through_ddpg()
                         if print_interval > 0 and epoch % print_interval == 0:
-                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+                            if len(self.train_actor_losses) > 0:
+                                print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
+                                    f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
+                                    f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
 
     def train_single_step_through_behavior_cloning(self):
 
         loss_on_total_dataset = []
 
         for batch in self.train_dataloader:
-            self.actor_optimizer.zero_grad()
             states, actions = self.data_processer.preprocess(batch)
             predicted_actions = self.model(states)
+
             loss = self.loss_function(predicted_actions, actions, "behavior_clone")
+            self.actor_optimizer.zero_grad()
             loss.backward()
-            loss_on_total_dataset.append(loss.item())
             self.actor_optimizer.step()
+
+            loss_on_total_dataset.append(loss.item())
 
         self.scheduler.step()
         self.train_losses.append(mean(loss_on_total_dataset).item())
 
     def train_single_epoch_through_ddpg(self):
-        # 清空梯度
-        self.critic_optimizer.zero_grad()
-        self.actor_optimizer.zero_grad()
-
         # 重置环境
-        state, r, done, timeout, info = self.environment.reset()
-
+        state, reward, done, timeout, info = self.environment.reset()
+        total_r = reward
         # 时间步 1 -> T
         while not done and not timeout:
-
-            # 将环境返回的观测值转换为模型可接受的格式
-            state = self.converter.convert("s", state, "simulation", "model")
-
             # 模型 actor 采取动作
-            action = self.model(state)
-
-            action = self._generate_action_noise(action).to(action)
+            action = self.model(state.cuda())
+            action = self._generate_action_noise(action).cuda()
 
             # 将模型输出的动作转换为环境可接受的格式
             # 在环境中执行动作, 获取下一个观测值和奖励
-            next_state, r, done, timeout, info = self.environment.step(self.converter.convert("a", action, "model", "simulation"))
+            next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
 
             # 将数据存入回放池
-            self.replay_buffer.append(state, action, r, self.converter.convert("s", next_state, "simulation", "model"), done)
+            self.replay_buffer.append(state, action, reward, next_state, done)
 
-            # 从回放池中采样一批数据, 训练模型
-            for batch in self.replay_buffer:
-
-                # 解压数据
-                states, actions, rewards, next_states, dones = batch
-
-                # 训练 Critic 网络
-                # 计算 t+1 时的 目标 Q 值
-                y = rewards.cuda() + self.config.gamma * self.model(next_states.cuda(), None, "target_q")
-                # 计算当前的 Q 值
-                q = self.model(states.cuda(), actions.cuda(), "q")
-                # 计算 Critic 损失并更新参数
-                critic_loss = self.loss_function(y, q, "ddpg_critic")
-                critic_loss.backward()
-                self.critic_optimizer.step()
-
-                # 训练 Actor 网络
-                qs = self.model(states.cuda(), None, "q")
-                actor_loss = self.loss_function(qs, None, target="ddpg_actor")
-                actor_loss.backward()
-                self.actor_optimizer.step()
-                break
+            # 更新状态
             state = next_state
 
-            self.model.soft_update("actor", "critic")
+            # 累计奖励
+            total_r += reward
+
+            # 从回放池中采样一批数据, 训练模型
+            if len(self.replay_buffer) > self.replay_buffer.config.batch_size:
+                # 解压数据
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample()
+
+                # region 训练 Critic 网络
+                # 计算 t+1 时的 目标 Q 值
+                with no_grad():
+                    q_next = rewards.cuda() + self.config.gamma_rl * self.model(next_states.cuda(), None, "target_q") * (1 - dones.float().cuda())
+                # 计算当前的 Q 值
+                q = self.model(states.cuda(), actions.cuda(), "q")
+
+                # 计算 Critic 损失并更新参数 (减小 Q 和 Q_next 的差异)
+                critic_loss = self.loss_function(q, q_next, "ddpg_critic")
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                self.critic_optimizer.step()
+                # endregion
+
+                # region 训练 Actor 网络
+
+                # 计算当前的 Q 值
+                q = self.model(states.cuda(), None, "q")
+
+                # 计算 Actor 损失并更新参数 (最大化Q)
+                actor_loss = self.loss_function(q, None, target="ddpg_actor")
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor_optimizer.step()
+                # endregion
+
+                # 记录损失和累计奖励
+                self.train_actor_losses.append(actor_loss.item())
+                self.train_critic_losses.append(critic_loss.item())
+                self.train_rewards.append(total_r.item())
+
+                # 软更新目标网络
+                self.model.soft_update_target_net("actor", "critic")
+            else:
+                pass
+
+
+
 
     @no_grad()
     def evalute_on_environment(self,):
@@ -608,16 +638,19 @@ class AgentModelSolver(ModelSolver):
         done = False
         timeout = False
         while not done and not timeout:
-            state: Tensor = self.converter.convert("s", ob, "simulation", "realworld")  # type: ignore
-            action = self.model(state)  # type: ignore
-            action: NDArray[float32] = self.converter.convert("a", action, "realworld", "simulation")  # type: ignore
-            ob, reward, done, timeout, info = self.environment.step(action)
+            action = self.model(ob.cuda())
+            ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
             ob_list.append(ob)
         return ob_list
 
     def _generate_action_noise(self, action: Tensor, scale: float = 0.05) -> Tensor:
+        """TODO: 根据动作的标准差生成噪声"""
+
+        noise = (randn_like(action) * 2 - 1) * scale
+        return action + noise
+
         # 计算动作的均值和标准差
-        action_mean, action_std = self.replay_buffer.get_action_param()
+        action_mean, action_std = self.replay_buffer.get_action_mean_std()
         # 产生噪声
         noise = action_std.cuda() * randn_like(action) * scale
         return action + noise

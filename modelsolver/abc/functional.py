@@ -46,11 +46,15 @@ class ILoss(ABC, Module):
 
 
 class IOptimizer(ABC):
-    """优化器"""
+    """优化器."""
 
     if TYPE_CHECKING:
         def step(self): ...
         def __init__(self, model: IModel, config: HyperParameterConfig): ...
+
+    # def __init__(self, model: IModel, config: HyperParameterConfig):
+    #     self._config = config
+
 
     @property
     @abstractmethod

@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
-from copy import deepcopy
 from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from modelsolver.abc.model import IModel
-from torch import Tensor
+from torch import Tensor, no_grad
 from torch.nn import Module
 
 
@@ -84,15 +83,15 @@ class IAgentModel(IModel):
             """
             ...
 
-    def __init__(self, actor: IActor, critic: ICritic, config: Any):
+    def __init__(self, actor: IActor, critic: ICritic, target_actor: IActor, target_critic: ICritic, config: Any):
         assert is_dataclass(config), "config 必须是 dataclass 类型"
         super().__init__()
         self.actor = actor
         self.critic = critic
+        self.target_actor = target_actor
+        self.target_critic = target_critic
         self._config = config
         if actor is not None and critic is not None:
-            self.target_actor = deepcopy(actor)
-            self.target_critic = deepcopy(critic)
             self.target_actor.load_state_dict(actor.state_dict())
             self.target_critic.load_state_dict(critic.state_dict())
 
@@ -100,7 +99,8 @@ class IAgentModel(IModel):
     def config(self) -> Any:
         return self._config
 
-    def soft_update(self, *targets: Literal["actor", "critic"], tau: float = 0.005):
+    @no_grad()
+    def soft_update_target_net(self, *targets: Literal["actor", "critic"], tau: float = 0.005):
         """软更新 target 网络
 
         + 经典 A-C: C有C', A~没有~A'
@@ -111,16 +111,15 @@ class IAgentModel(IModel):
         for target in targets:
             match target:
                 case "actor":
-                    target_net_params = self.target_actor.parameters()
-                    net_params = self.actor.parameters()
+                    pairs = zip(self.target_actor.parameters(), self.actor.parameters())
                 case "critic":
-                    target_net_params = self.target_critic.parameters()
-                    net_params = self.critic.parameters()
+                    pairs = zip(self.target_critic.parameters(), self.critic.parameters())
                 case _:
                     raise ValueError("target must be 'actor' or 'critic'")
 
-            for param_target, param in zip(target_net_params, net_params):
-                param_target.data.copy_(param_target.data * (1.0 - tau) + param.data * tau)
+            for param_target, param in pairs:
+                param_target.mul_(1.0 - tau).add_(param.data, alpha=tau)
+
 
     def forward(self,
                 states: Tensor, actions: Tensor | None = None,
