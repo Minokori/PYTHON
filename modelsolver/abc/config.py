@@ -6,6 +6,7 @@ from dataclasses_json import dataclass_json
 from numpy import exp2, floor, log2
 
 
+# TODO agent hyper config
 @dataclass
 class HyperParameterConfig:
     """超参数配置"""
@@ -16,7 +17,12 @@ class HyperParameterConfig:
     milestones: list[int] = field(default_factory=lambda: [100, 150, 200])
     gamma: float = 0.1
     gamma_rl: float = 0.98
-    epoch: int = 500
+    epoch: int = 1000
+
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-3
+
+
 
 
 @dataclass_json

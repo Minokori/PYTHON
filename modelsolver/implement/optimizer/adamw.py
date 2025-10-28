@@ -1,5 +1,5 @@
-import torch
-from torch.optim import AdamW as AdamW, Optimizer
+from torch.optim import AdamW as AdamW
+from torch.optim import Optimizer
 
 from modelsolver.abc.config import HyperParameterConfig
 from modelsolver.abc.functional import IAgentOptimizer, IOptimizer
@@ -25,7 +25,7 @@ class AdamWOptimizer(IOptimizer, AdamW):
         return self._config
 
     @property
-    def optimizer(self) -> torch.optim.Optimizer:
+    def optimizer(self) -> Optimizer:
         """返回优化器实例"""
         return self
 
@@ -35,14 +35,14 @@ class DefaultAgentOptimizer(IAgentOptimizer):
         self._config = config
         assert isinstance(model, IAgentModel), "model 必须是 IAgentModel 的实例"
         self._actor_optimizer = AdamW(model.actor.parameters(),
-                                      lr=config.learning_rate,
+                                      lr=config.actor_lr,
                                       betas=config.betas,
                                       eps=config.eps,
                                       weight_decay=config.weight_decay,
                                       )
 
         self._critic_optimizer = AdamW(model.critic.parameters(),
-                                       lr=config.learning_rate,
+                                       lr=config.critic_lr,
                                        betas=config.betas,
                                        eps=config.eps,
                                        weight_decay=config.weight_decay,

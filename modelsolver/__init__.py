@@ -28,10 +28,10 @@ from modelsolver.abc.functional import (IAgentLoss, IAgentOptimizer,
                                         IAgentScheduler, ILoss, IOptimizer,
                                         IScheduler)
 from modelsolver.abc.model import IActor, IAgentModel, ICritic, IModel
-from modelsolver.implement.optimizer.adamw import AdamWOptimizer
 from modelsolver.implement.loss import DefaultAgentLoss
 from modelsolver.implement.model import NullActor, NullCritic
 from modelsolver.implement.optimizer import DefaultAgentOptimizer
+from modelsolver.implement.optimizer.adamw import AdamWOptimizer
 from modelsolver.implement.scheduler.multistep import AgentMultiStepScheduler
 from modelsolver.implement.scheduler.nullstep import NullScheduler
 
@@ -562,7 +562,7 @@ class AgentModelSolver(ModelSolver):
                     has_train = False
 
                     while not has_train:
-                        has_train = self.train_single_epoch_through_ddpg()
+                        has_train = self.train_single_epoch_through_ddpg(epoch)
 
                     if print_interval > 0 and epoch % print_interval == 0:
                         if len(self.train_actor_losses) > 0:
@@ -588,7 +588,7 @@ class AgentModelSolver(ModelSolver):
         self.actor_scheduler.step()
         self.train_losses.append(mean(loss_on_total_dataset).item())
 
-    def train_single_epoch_through_ddpg(self) -> bool:
+    def train_single_epoch_through_ddpg(self,epoch:int) -> bool:
 
         # region 单步训练前准备
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
@@ -603,7 +603,7 @@ class AgentModelSolver(ModelSolver):
             with no_grad():  # 和环境交互, 获得 (s, a, r, s', done) -> replay_buffer
                 # 模型 actor 采取动作, 并添加噪声
                 action = self.model(state.cuda())
-                action = self._generate_action_noise(action).cuda()
+                action = self._generate_action_noise(action, epoch).cuda()
                 # 在环境中执行动作, 获取下一个观测值和奖励
                 next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
                 # 将数据存入回放池
@@ -658,11 +658,16 @@ class AgentModelSolver(ModelSolver):
                 # 设置标志位
                 has_train = True
 
-                # 更新学习率
-                self.actor_scheduler.step()
-                self.critic_scheduler.step()
+
+
+                print(f"Actor Loss: {actor_loss.item():.4f}, Critic Loss: {critic_loss.item():.4f}")
             else:
                 has_train = False
+
+
+        # 更新学习率
+        self.actor_scheduler.step()
+        self.critic_scheduler.step()
 
         return has_train
 
@@ -679,8 +684,8 @@ class AgentModelSolver(ModelSolver):
             ob_list.append(ob)
         return ob_list
 
-    def _generate_action_noise(self, action: Tensor, scale: float = 0.05) -> Tensor:
+    def _generate_action_noise(self, action: Tensor, epoch: int, scale: float = 0.01) -> Tensor:
         """TODO: 根据动作的标准差生成噪声"""
 
         noise = randn_like(action) * scale
-        return action + noise.detach()
+        return (action + noise.detach()).clip(-1,1)

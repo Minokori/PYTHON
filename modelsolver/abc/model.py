@@ -142,7 +142,7 @@ class IAgentModel(IModel):
         return self._config
 
     @no_grad()
-    def soft_update_target_net(self, *targets: Literal["actor", "critic"], tau: float = 0.005):
+    def soft_update_target_net(self, *targets: Literal["actor", "critic"], tau: float = 0.05):
         """软更新 target 网络
 
         + 经典 A-C: C有C', A~没有~A'
