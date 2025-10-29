@@ -21,7 +21,6 @@ class IDataset(ABC):
     @abstractmethod
     def __add__(self, other: Self) -> Self: ...
 
-# TODO 抽成 dict 形式 __getitem__(self, mode="调用的函数")-> Callable
 class IDataProcesser(ABC):
     @abstractmethod
     def collate_fn(self, batch: Sequence) -> tuple[list[Tensor], list[Tensor]]:

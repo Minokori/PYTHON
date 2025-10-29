@@ -26,7 +26,8 @@ class AgentMultiStepScheduler(IAgentScheduler):
         self._config = config
         self._actor_scheduler = MultiStepLR(optimizer=optimizer.actor_optimizer, milestones=config.milestones, gamma=config.gamma)
         self._critic_scheduler = MultiStepLR(optimizer=optimizer.critic_optimizer, milestones=config.milestones, gamma=config.gamma)
-
+        self._critic_other_scheduler = MultiStepLR(optimizer=optimizer.critic_other_optimizer, milestones=config.milestones, gamma=config.gamma)
+        self._log_alpha_scheduler = MultiStepLR(optimizer=optimizer.log_alpha_optimizer, milestones=config.milestones, gamma=config.gamma)
     @property
     def actor_scheduler(self) -> MultiStepLR:
         return self._actor_scheduler
@@ -36,9 +37,17 @@ class AgentMultiStepScheduler(IAgentScheduler):
         return self._critic_scheduler
 
     @property
+    def critic_other_scheduler(self) -> MultiStepLR:
+        return self._critic_other_scheduler
+
+    @property
+    def log_alpha_scheduler(self) -> MultiStepLR:
+        return self._log_alpha_scheduler
+
+    @property
     def config(self) -> HyperParameterConfig:
         return self._config
 
     @property
     def scheduler(self) -> MultiStepLR:
-        return self._actor_scheduler
+        raise NotImplementedError("IAgentScheduler 不实现 scheduler, 请使用 actor_scheduler 或 critic_scheduler")

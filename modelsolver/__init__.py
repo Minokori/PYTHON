@@ -6,6 +6,7 @@ from dataclasses import is_dataclass
 from math import floor, log
 from typing import Any, Literal, Self
 
+import torch
 from clean_ioc import Container, DependencySettings, Lifespan
 from clean_ioc.registration_filters import with_name
 from matplotlib import pyplot as plt
@@ -18,8 +19,6 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, random_split
-
-from modelsolver import abc
 from modelsolver.abc.config import DataConfig, HyperParameterConfig
 from modelsolver.abc.data import (IDataLoader, IDataProcesser, IDataset,
                                   IReplayBuffer)
@@ -30,15 +29,13 @@ from modelsolver.abc.functional import (IAgentLoss, IAgentOptimizer,
 from modelsolver.abc.model import IActor, IAgentModel, ICritic, IModel
 from modelsolver.implement.loss import DefaultAgentLoss
 from modelsolver.implement.model import NullActor, NullCritic
-from modelsolver.implement.optimizer import DefaultAgentOptimizer
-from modelsolver.implement.optimizer.adamw import AdamWOptimizer
+from modelsolver.implement.optimizer.adamw import (AdamWOptimizer,
+                                                   AgentAdamWOptimizer)
 from modelsolver.implement.scheduler.multistep import AgentMultiStepScheduler
 from modelsolver.implement.scheduler.nullstep import NullScheduler
 
 
 # endregion
-
-__all__ = ["ModelSolver", "abc"]
 
 # TODO model的 __call__ 方法的 **kwargs
 
@@ -65,7 +62,6 @@ class ModelSolver(Container):
         self.add_lr_scheduler(NullScheduler)
 
     # region 注册损失函数, 优化器, 学习率调度器, 配置项, 数据处理器, 使 ioc 更易用
-    # TODO 具名loss, optimizer, scheduler, 因为RL有可能会有多个
     def add_loss_function(self, loss_function: type[ILoss], name: str | None = None):
         """注册损失函数"""
         self.register(ILoss, loss_function, lifespan=Lifespan.singleton, name=name)
@@ -79,7 +75,7 @@ class ModelSolver(Container):
         self.register(IOptimizer, implementation_type=optimizer, lifespan=Lifespan.singleton, name=name)
         return self
 
-    # TODO lr 引用 opt, 当 opt有多个时无法区分
+
     def add_lr_scheduler(self, lr_scheduler: type[IScheduler], *name: str | None):
         """注册学习率调度器"""
         if not name:
@@ -430,8 +426,6 @@ class ModelSolver(Container):
         plt.show()
     # endregion
 
-
-# TODO scheduler 区分 actor 和 critic
 class AgentModelSolver(ModelSolver):
 
     # region environment 相关函数, override 函数签名 (提供类型检查)
@@ -448,7 +442,7 @@ class AgentModelSolver(ModelSolver):
         self.add_model_component(ICritic, NullCritic)
 
         # 默认的 optimizer
-        self.add_optimizer(DefaultAgentOptimizer)
+        self.add_optimizer(AgentAdamWOptimizer)
 
         # 默认的 replay buffer
         self.add_replay_buffer(IReplayBuffer)
@@ -514,6 +508,19 @@ class AgentModelSolver(ModelSolver):
         return optimizer.critic_optimizer
 
     @property
+    def critic_other_optimizer(self) -> Optimizer:
+        optimizer = self.resolve(IOptimizer)
+        assert isinstance(optimizer, IAgentOptimizer)
+        return optimizer.critic_other_optimizer
+
+    @property
+    def log_alpha_optimizer(self) -> Optimizer:
+        optimizer = self.resolve(IOptimizer)
+        assert isinstance(optimizer, IAgentOptimizer)
+        return optimizer.log_alpha_optimizer
+
+# TODO other 的 step
+    @property
     def actor_scheduler(self) -> _LRScheduler:
         scheduler = self.resolve(IScheduler)
         assert isinstance(scheduler, IAgentScheduler)
@@ -524,6 +531,19 @@ class AgentModelSolver(ModelSolver):
         scheduler = self.resolve(IScheduler)
         assert isinstance(scheduler, IAgentScheduler)
         return scheduler.critic_scheduler
+
+    @property
+    def critic_other_scheduler(self) -> _LRScheduler:
+        scheduler = self.resolve(IScheduler)
+        assert isinstance(scheduler, IAgentScheduler)
+        return scheduler.critic_other_scheduler
+
+    @property
+    def log_alpha_scheduler(self) -> _LRScheduler:
+        scheduler = self.resolve(IScheduler)
+        assert isinstance(scheduler, IAgentScheduler)
+        return scheduler.log_alpha_scheduler
+
     @property
     def loss_function(self) -> IAgentLoss:
         loss_function = super().loss_function
@@ -541,11 +561,13 @@ class AgentModelSolver(ModelSolver):
     def train_critic_losses(self) -> list[float]:
         return self.stats["critic_losses"]
     # endregion
-    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg"] = "behavior_cloning"):
+
+    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac"] = "behavior_cloning"):
         self.model.train()
         # 清空 scheduler 计数器
         self.actor_scheduler.last_epoch = -1
         self.critic_scheduler.last_epoch = -1
+        self.critic_other_scheduler.last_epoch = -1
         match method:
 
             case "behavior_cloning":
@@ -563,6 +585,18 @@ class AgentModelSolver(ModelSolver):
 
                     while not has_train:
                         has_train = self.train_single_epoch_through_ddpg(epoch)
+
+                    if print_interval > 0 and epoch % print_interval == 0:
+                        if len(self.train_actor_losses) > 0:
+                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
+                                  f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
+                                  f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
+            case "sac":
+                for epoch in range(self.config.epoch):
+                    has_train = False
+
+                    while not has_train:
+                        has_train = self.train_single_epoch_through_sac(epoch)
 
                     if print_interval > 0 and epoch % print_interval == 0:
                         if len(self.train_actor_losses) > 0:
@@ -668,6 +702,109 @@ class AgentModelSolver(ModelSolver):
         # 更新学习率
         self.actor_scheduler.step()
         self.critic_scheduler.step()
+
+        return has_train
+
+    def train_single_epoch_through_sac(self, epoch: int) -> bool:
+        # region 单步训练前准备
+        state, reward, done, timeout, info = self.environment.reset()  # 重置环境
+        total_r = reward  # 累计奖励初始化
+        has_train = False  # 标志位, 表示是否完成了一次训练. (若仅收集数据, 则为 False)
+        # endregion
+
+        # 时间步 1 -> T
+        while not done and not timeout:
+
+            with no_grad():  # 和环境交互, 获得 (s, a, r, s', done) -> replay_buffer
+                # 模型 actor 采取动作
+                action = self.model(state.cuda())
+                # 在环境中执行动作, 获取下一个观测值和奖励
+                next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
+                # 将数据存入回放池
+                self.replay_buffer.append(state, action, reward, next_state, done)
+                # 更新状态
+                state = next_state
+                # 累计奖励
+                total_r += reward
+
+            # 从回放池中采样一批数据, 训练模型
+            if self.replay_buffer.can_sample:
+
+                # 解压数据
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample()
+
+                # region 训练 Critic 网络
+                # 计算 t+1 时的 目标 Q 值
+                with no_grad():
+                    q_next = rewards.cuda() + \
+                        self.config.gamma_rl * self.model(next_states.cuda(), None, "target_q_sac") * (1 - dones.float().cuda())
+
+                # 计算当前的 Q 值
+                q = self.model(states.cuda(), actions.cuda(), "q")
+                q_other = self.model(states.cuda(), actions.cuda(), "q_other")
+
+                # 计算 Critic 损失并更新参数 (减小 Q 和 Q_next 的差异)
+                critic_loss = self.loss_function(q, q_next, "ddpg_critic")
+                critic_loss_other = self.loss_function(q_other, q_next, "ddpg_critic")
+                self.critic_optimizer.zero_grad()
+                self.critic_other_optimizer.zero_grad()
+
+                critic_loss.backward()
+                critic_loss_other.backward()
+                self.critic_optimizer.step()
+                self.critic_other_optimizer.step()
+                # endregion
+
+                # region 训练 Actor 网络
+
+                # 计算当前的 Q 值
+                actions, log_probs = self.model.actor(states.cuda())
+                entropy = -log_probs
+
+                q = self.model(states.cuda(), actions.cuda(), "q")
+                q_other = self.model(states.cuda(), actions.cuda(), "q_other")
+
+                # 计算 Actor 损失并更新参数 (最大化Q)
+                # TODO 放到 loss function 中
+                actor_loss = torch.mean(-self.model.log_alpha.exp() * entropy - torch.min(q, q_other))
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor_optimizer.step()
+                # endregion
+
+                # region 更新 alpha
+                alpha_loss = torch.mean(self.model.log_alpha.exp() * (entropy - self.model.target_entropy).detach())
+                self.log_alpha_optimizer.zero_grad()
+                alpha_loss.backward()
+                self.log_alpha_optimizer.step()
+                # endregion
+
+                # 记录损失和累计奖励
+                self.train_actor_losses.append(actor_loss.item())
+                self.train_critic_losses.append(critic_loss.item())
+                self.train_rewards.append(total_r.item())
+
+                # 软更新目标网络
+                self.model.soft_update_target_net("critic", "critic_other")
+
+                # 设置标志位
+                has_train = True
+
+                print(
+                    f"Actor Loss: {
+                        actor_loss.item():.4f}, Critic Loss: {
+                        (
+                            critic_loss.item() +
+                            critic_loss_other.item()) /
+                        2:.4f}, Alpha Loss: {
+                        alpha_loss.item():.4f}")
+            else:
+                has_train = False
+
+        # 更新学习率
+        # self.actor_scheduler.step()
+        # self.critic_scheduler.step()
+        # self.log_alpha_scheduler.step()
 
         return has_train
 

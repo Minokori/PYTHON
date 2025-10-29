@@ -54,4 +54,8 @@ class DefaultAgentLoss(IAgentLoss):
 
     def ddpg_critic_loss(self, predicted_q: Tensor, target_q: Tensor) -> Tensor:
         return mean(mse_loss(predicted_q, target_q))
+
+    # TODO kwargs
+    def sac_actor_loss(self, predicted_q: Tensor) -> Tensor:
+        raise NotImplementedError("SAC actor loss is not implemented")
 # endregion

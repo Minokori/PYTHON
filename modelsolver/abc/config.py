@@ -11,16 +11,28 @@ from numpy import exp2, floor, log2
 class HyperParameterConfig:
     """超参数配置"""
     learning_rate: float = 1e-3
+    """学习率"""
     betas: tuple[float, float] = (0.9, 0.999)
+    """Adam/AdamW 等优化器的 beta 参数"""
     weight_decay: float = 0.01
+    """Adam/AdamW 等权重衰减"""
     eps: float = 1e-8
+    """Adam/AdamW 等数值稳定性参数"""
     milestones: list[int] = field(default_factory=lambda: [100, 150, 200])
+    """学习率调度器的里程碑"""
     gamma: float = 0.1
+    """学习率调度器的衰减系数"""
     gamma_rl: float = 0.98
-    epoch: int = 1000
+    """RL 的 奖励衰减系数"""
+    epoch: int = 500
+    """训练的总轮数"""
 
     actor_lr: float = 3e-4
+    """Actor 的学习率"""
     critic_lr: float = 3e-3
+    """Critic 的学习率"""
+
+
 
 
 
@@ -67,4 +79,17 @@ class ReplayBufferConfig:
     """在开始采样之前, 经验回放池中至少需要存储的序列数"""
     batch_size: int
     """每个采样批次的大小"""
+
+
+@dataclass_json
+@dataclass
+class AgentHyperParameterConfig():
+    """超参数配置"""
+    simple: HyperParameterConfig = field(default_factory=lambda: HyperParameterConfig())
+    gamma_rl: float = 0.98
+    """RL 的 奖励衰减系数"""
+    actor_lr: float = 3e-4
+    """Actor 的学习率"""
+    critic_lr: float = 3e-3
+    """Critic 的学习率"""
 # endregion RL

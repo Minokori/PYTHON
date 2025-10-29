@@ -5,10 +5,11 @@ from typing import TYPE_CHECKING, Literal
 import torch
 from torch import Tensor
 from torch.nn import Module
+from torch.optim import Optimizer
 
 from modelsolver.abc.config import HyperParameterConfig
-from modelsolver.abc.model import IModel,IAgentModel
-from torch.optim import Optimizer
+from modelsolver.abc.model import IAgentModel, IModel
+
 
 class ILoss(ABC, Module):
     """损失函数"""
@@ -95,14 +96,6 @@ class IAgentLoss(ILoss, ABC):
 
 class IAgentScheduler(IScheduler, ABC):
     """学习率调度器"""
-
-    if TYPE_CHECKING:
-        def step(self): ...
-
-    @property
-    def scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
-        return self.actor_scheduler
-
     @property
     @abstractmethod
     def config(self): ...
@@ -117,6 +110,15 @@ class IAgentScheduler(IScheduler, ABC):
     def critic_scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
         ...
 
+    @property
+    @abstractmethod
+    def critic_other_scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
+        ...
+
+    @property
+    @abstractmethod
+    def log_alpha_scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
+        ...
 
 class IAgentOptimizer(IOptimizer, ABC):
     """智能体优化器接口.
@@ -143,6 +145,18 @@ class IAgentOptimizer(IOptimizer, ABC):
     @abstractmethod
     def critic_optimizer(self) -> Optimizer:
         """返回 critic 的优化器"""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def critic_other_optimizer(self) -> Optimizer:
+        """返回 其他 critic 优化器"""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def log_alpha_optimizer(self) -> Optimizer:
+        """返回 alpha 的优化器"""
         raise NotImplementedError
 
 # endregion

@@ -1,4 +1,5 @@
 import torch
+
 from modelsolver.abc.config import HyperParameterConfig
 from modelsolver.abc.functional import IOptimizer, IScheduler
 
