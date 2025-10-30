@@ -13,7 +13,7 @@ from matplotlib import pyplot as plt
 from matplotlib.font_manager import FontProperties
 from numpy import float32, mean
 from numpy.typing import NDArray
-from torch import Tensor, load, no_grad, randn_like, save
+from torch import load, no_grad, save
 from torch.autograd import set_detect_anomaly
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
@@ -32,8 +32,8 @@ from modelsolver.implement.loss import DefaultAgentLoss
 from modelsolver.implement.model import NullActor, NullCritic
 from modelsolver.implement.optimizer.adamw import (AdamWOptimizer,
                                                    AgentAdamWOptimizer)
-from modelsolver.implement.scheduler.multistep import AgentMultiStepScheduler
-from modelsolver.implement.scheduler.nullstep import NullScheduler
+from modelsolver.implement.scheduler.nullstep import (AgentNullScheduler,
+                                                      NullScheduler)
 
 
 # endregion
@@ -452,7 +452,7 @@ class AgentModelSolver(ModelSolver):
         self.add_loss_function(DefaultAgentLoss)
 
         # 默认的 scheduler
-        self.add_lr_scheduler(AgentMultiStepScheduler)
+        self.add_lr_scheduler(AgentNullScheduler)
 
     def add_model(self, model: IAgentModel | type[IAgentModel]):
         """添加智能体模型"""
@@ -569,23 +569,20 @@ class AgentModelSolver(ModelSolver):
         self.actor_scheduler.last_epoch = -1
         self.critic_scheduler.last_epoch = -1
         self.critic_other_scheduler.last_epoch = -1
+        self.log_alpha_scheduler.last_epoch = -1
         match method:
 
             case "behavior_cloning":
-
                 for epoch in range(self.config.epoch):
                     self.train_single_step_through_behavior_cloning()
                     if print_interval > 0 and epoch % print_interval == 0:
                         print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
-
                 self.model.soft_update_target_net("actor", tau=1.0)
-
             case "ddpg":
                 for epoch in range(self.config.epoch):
                     has_train = False
-
                     while not has_train:
-                        has_train = self.train_single_epoch_through_ddpg(epoch)
+                        has_train = self.train_single_epoch_offline(epoch, method="ddpg")
 
                     if print_interval > 0 and epoch % print_interval == 0:
                         if len(self.train_actor_losses) > 0:
@@ -595,10 +592,8 @@ class AgentModelSolver(ModelSolver):
             case "sac":
                 for epoch in range(self.config.epoch):
                     has_train = False
-
                     while not has_train:
-                        has_train = self.train_single_epoch_through_sac(epoch)
-
+                        has_train = self.train_single_epoch_offline(epoch, method="sac")
                     if print_interval > 0 and epoch % print_interval == 0:
                         if len(self.train_actor_losses) > 0:
                             print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
@@ -623,192 +618,151 @@ class AgentModelSolver(ModelSolver):
         self.actor_scheduler.step()
         self.train_losses.append(mean(loss_on_total_dataset).item())
 
-    def train_single_epoch_through_ddpg(self,epoch:int) -> bool:
+    def train_through_ddpg(self, epoch: int):
+        # 解压数据
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample()
 
-        # region 单步训练前准备
-        state, reward, done, timeout, info = self.environment.reset()  # 重置环境
-        total_r = reward  # 累计奖励初始化
-        has_train = False  # 标志位, 表示是否完成了一次训练. (若仅收集数据, 则为 False)
+        # region 训练 Critic 网络
+        # 计算 t+1 时的 目标 Q 值
+        with no_grad():
+            q_next = self.model(next_states.cuda(), None, "target_q")
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.cuda())
+        # 计算当前的 Q 值
+        q = self.model(states.cuda(), actions.cuda(), "q")
+
+        # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
+        critic_loss = self.loss_function(q, q_target, "ddpg_critic")
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
         # endregion
 
-
-        # 时间步 1 -> T
-        while not done and not timeout:
-
-            with no_grad():  # 和环境交互, 获得 (s, a, r, s', done) -> replay_buffer
-                # 模型 actor 采取动作
-                action = self.model(state.cuda())
-                # 在环境中执行动作, 获取下一个观测值和奖励
-                next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
-                # 将数据存入回放池
-                self.replay_buffer.append(state, action, reward, next_state, done)
-                # 更新状态
-                state = next_state
-                # 累计奖励
-                total_r += reward
-
-            # 从回放池中采样一批数据, 训练模型
-            if self.replay_buffer.can_sample:
-
-                # 解压数据
-                states, actions, rewards, next_states, dones = self.replay_buffer.sample()
-
-                # region 训练 Critic 网络
-                # 计算 t+1 时的 目标 Q 值
-                with no_grad():
-                    q_next = rewards.cuda() + \
-                        self.config.gamma_rl * self.model(next_states.cuda(), None, "target_q") * (1 - dones.float().cuda())
-
-                # 计算当前的 Q 值
-                q = self.model(states.cuda(), actions.cuda(), "q")
-
-                # 计算 Critic 损失并更新参数 (减小 Q 和 Q_next 的差异)
-                critic_loss = self.loss_function(q, q_next, "ddpg_critic")
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-                # endregion
-
-                # region 训练 Actor 网络
-
-                # 计算当前的 Q 值
-                q = self.model(states.cuda(), None, "q")
-
-                # 计算 Actor 损失并更新参数 (最大化Q)
-                actor_loss = self.loss_function(q, None, target="ddpg_actor")
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                self.actor_optimizer.step()
-                # endregion
-
-                # 记录损失和累计奖励
-                self.train_actor_losses.append(actor_loss.item())
-                self.train_critic_losses.append(critic_loss.item())
-                self.train_rewards.append(total_r.item())
-
-                # 软更新目标网络
-                self.model.soft_update_target_net("actor", "critic")
-
-                # 设置标志位
-                has_train = True
-
-
-
-                print(f"Actor Loss: {actor_loss.item():.4f}, Critic Loss: {critic_loss.item():.4f}")
-            else:
-                has_train = False
-
-
-        # 更新学习率
-        self.actor_scheduler.step()
-        self.critic_scheduler.step()
-
-        return has_train
-
-    def train_single_epoch_through_sac(self, epoch: int) -> bool:
-        # region 单步训练前准备
-        state, reward, done, timeout, info = self.environment.reset()  # 重置环境
-        total_r = reward  # 累计奖励初始化
-        has_train = False  # 标志位, 表示是否完成了一次训练. (若仅收集数据, 则为 False)
+        # region 训练 Actor 网络
+        # 计算当前的 Q 值
+        q = self.model(states.cuda(), None, "q")
+        # 计算 Actor 损失并更新参数 (最大化Q)
+        actor_loss = self.loss_function(q, None, target="ddpg_actor")
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
         # endregion
 
-        # 时间步 1 -> T
+        # 记录损失
+        self.train_actor_losses.append(actor_loss.item())
+        self.train_critic_losses.append(critic_loss.item())
+
+        # 软更新目标网络
+        self.model.soft_update_target_net("actor", "critic")
+
+        print(f"Actor Loss: {actor_loss.item():.4f}, Critic Loss: {critic_loss.item():.4f}")
+
+    def train_through_sac(self, epoch: int):
+
+        # 解压数据
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample()
+
+        # region 训练 Critic 网络
+        # 计算 t+1 时的 目标 Q 值
+        with no_grad():
+            q_next = self.model(next_states.cuda(), None, "target_q_sac")
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.cuda())
+
+        # 计算当前的 Q 值
+        q = self.model(states.cuda(), actions.cuda(), "q")
+        q_other = self.model(states.cuda(), actions.cuda(), "q_other")
+
+        # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
+        critic_loss = self.loss_function(q, q_target, "ddpg_critic")
+        critic_other_loss = self.loss_function(q_other, q_target, "ddpg_critic")
+
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+
+        self.critic_other_optimizer.zero_grad()
+        critic_other_loss.backward()
+        self.critic_other_optimizer.step()
+        # endregion
+
+        # region 训练 Actor 网络
+
+        # 计算当前的 Q 值
+        predicted_actions, log_probs = self.model(states.cuda(), None, "action_with_log_prob")
+        entropy = -log_probs
+
+        q = self.model(states.cuda(), predicted_actions, "q")
+        q_other = self.model(states.cuda(), predicted_actions, "q_other")
+
+        # 计算 Actor 损失并更新参数 (最大化Q)
+        # TODO 放到 loss function 中
+        actor_loss = torch.mean(
+            -self.model.log_alpha.exp() * entropy - torch.min(q, q_other))
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+        # endregion
+
+        # region 更新 alpha
+        alpha_loss = torch.mean(
+            (entropy - self.model.config.target_entropy).detach() *
+            self.model.log_alpha.exp())
+        self.log_alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.log_alpha_optimizer.step()
+        # endregion
+
+        # 记录损失和累计奖励
+        self.train_actor_losses.append(actor_loss.item())
+        self.train_critic_losses.append((critic_loss.item() + critic_other_loss.item()) / 2)
+
+        # 软更新目标网络
+        self.model.soft_update_target_net("critic", "critic_other")
+
+        print(
+            f"Actor Loss: {
+                actor_loss.item():.4f}, Critic1 Loss: {
+                critic_loss.item():.4f}, Critic2 Loss: {
+                critic_other_loss.item():.4f}, Alpha Loss: {
+                alpha_loss.item():.4f}")
+
+    def train_single_epoch_offline(self, epoch: int, method: str) -> bool:
+        # region 单步训练前准备
+        state, reward, done, timeout, info = self.environment.reset()  # 重置环境
+        total_r= reward # 累计奖励和标志位
+        # endregion
+
         while not done and not timeout:
 
-            with no_grad():  # 和环境交互, 获得 (s, a, r, s', done) -> replay_buffer
-                # 模型 actor 采取动作
-                action = self.model(state.cuda())
-                # 在环境中执行动作, 获取下一个观测值和奖励
-                next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
-                # 将数据存入回放池
+            # 与环境交互
+            with no_grad():
+                action = self.model(state.cuda(), None, "action")
+                next_state, reward, done, timeout, info = self.environment.step(action.cpu())
                 self.replay_buffer.append(state, action, reward, next_state, done)
-                # 更新状态
                 state = next_state
-                # 累计奖励
                 total_r += reward
 
-            # 从回放池中采样一批数据, 训练模型
-            if self.replay_buffer.can_sample:
-
-                # 解压数据
-                states, actions, rewards, next_states, dones = self.replay_buffer.sample()
-
-                # region 训练 Critic 网络
-                # 计算 t+1 时的 目标 Q 值
-                with no_grad():
-                    q_next = rewards.cuda() + \
-                        self.config.gamma_rl * self.model(next_states.cuda(), None, "target_q_sac") * (1 - dones.float().cuda())
-
-                # 计算当前的 Q 值
-                q = self.model(states.cuda(), actions.cuda(), "q")
-                q_other = self.model(states.cuda(), actions.cuda(), "q_other")
-
-                # 计算 Critic 损失并更新参数 (减小 Q 和 Q_next 的差异)
-                critic_loss = self.loss_function(q, q_next, "ddpg_critic")
-                critic_loss_other = self.loss_function(q_other, q_next, "ddpg_critic")
-
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-
-                self.critic_other_optimizer.zero_grad()
-                critic_loss_other.backward()
-                self.critic_other_optimizer.step()
-                # endregion
-
-                # region 训练 Actor 网络
-
-                # 计算当前的 Q 值
-                actions, log_probs = self.model.actor(states.cuda())
-                entropy = -log_probs
-
-                q = self.model(states.cuda(), actions.cuda(), "q")
-                q_other = self.model(states.cuda(), actions.cuda(), "q_other")
-
-                # 计算 Actor 损失并更新参数 (最大化Q)
-                # TODO 放到 loss function 中
-                actor_loss = torch.mean(-self.model.log_alpha.exp() * entropy - torch.min(q, q_other))
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                self.actor_optimizer.step()
-                # endregion
-
-                # region 更新 alpha
-                alpha_loss = torch.mean(
-                    self.model.log_alpha.exp() * (entropy - self.model.config.target_entropy).detach())
-                self.log_alpha_optimizer.zero_grad()
-                alpha_loss.backward()
-                self.log_alpha_optimizer.step()
-                # endregion
-
-                # 记录损失和累计奖励
-                self.train_actor_losses.append(actor_loss.item())
-                self.train_critic_losses.append(critic_loss.item())
-                self.train_rewards.append(total_r.item())
-
-                # 软更新目标网络
-                self.model.soft_update_target_net("critic", "critic_other")
-
-                # 设置标志位
-                has_train = True
-
-                print(
-                    f"Actor Loss: {
-                        actor_loss.item():.4f}, Critic Loss: {
-                        (
-                            critic_loss.item() +
-                            critic_loss_other.item()) /
-                        2:.4f}, Alpha Loss: {
-                        alpha_loss.item():.4f}")
+            # 训练
+            if not self.replay_buffer.can_sample:
+                pass
             else:
-                has_train = False
+                match method:
+                    case "ddpg":
+                        self.train_through_ddpg(epoch)
+                    case "sac":
+                        self.train_through_sac(epoch)
 
         # 更新学习率
-        # self.actor_scheduler.step()
-        # self.critic_scheduler.step()
-        # self.log_alpha_scheduler.step()
+        match method:
+            case "ddpg":
+                self.actor_scheduler.step()
+                self.critic_scheduler.step()
+            case "sac":
+                self.actor_scheduler.step()
+                self.critic_scheduler.step()
+                self.critic_other_scheduler.step()
+                self.log_alpha_scheduler.step()
+        return True
 
-        return has_train
 
     @no_grad()
     def evalute_on_environment(self,):
@@ -822,4 +776,3 @@ class AgentModelSolver(ModelSolver):
             ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
             ob_list.append(ob)
         return ob_list
-

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 from numpy import log
-from torch import Tensor, no_grad, tensor
+from torch import Tensor, no_grad
 from torch.distributions import Normal
 from torch.nn import Module
 
@@ -32,7 +32,7 @@ class IModel(ABC, Module):
         """模型保存的名称"""
         ...
 
-#region
+# region RL
 
 class IActor(ABC, Module):
     """策略网络接口. 输入 s, 输出 a 和采样到 a 的 log_prob
@@ -52,7 +52,7 @@ class IActor(ABC, Module):
                 state (Tensor): 状态 s
 
             Returns:
-                动作&其他参数 (Tensor): 动作 a 和其他参数 (比如 SAC 的 Actor 还会输出 logprob)
+                动作&log_prob (Tensor): 动作 a 和 log_prob
             """
             ...
 
@@ -96,8 +96,8 @@ class IActor(ABC, Module):
 
         action = torch.tanh(sampled_action)
         # 计算tanh_normal分布的对数概率密度
-        log_prob = log_prob - torch.log(1 - torch.tanh(action).pow(2) + 1e-7)
-        # action = action * self.action_bound
+        log_prob = log_prob - torch.log(1 - action.pow(2) + 1e-7)
+        # action = action *2  # TODO: 根据环境修改动作范围
         return action, log_prob
 
 class ICritic(ABC, Module):
@@ -138,6 +138,7 @@ class IAgentModel(IModel):
                      action: Tensor | None = None,
                      output: Literal["action",
                                      "target_action",
+                                     "action_with_log_prob",
                                      "q", "q_other",
                                      "target_q",
                                      "target_q_sac"] = "action", ** kwargs) -> Tensor:
@@ -183,7 +184,7 @@ class IAgentModel(IModel):
         self.init_target_nets()
 
         # SAC 需要的 参数
-        self.log_alpha = tensor(log(0.01), requires_grad=True, dtype=torch.float32)
+        self.log_alpha = torch.tensor(log(0.01), requires_grad=True, dtype=torch.float32)
 
     @property
     def config(self) -> Any:
@@ -196,7 +197,7 @@ class IAgentModel(IModel):
         self.other_target_critic.load_state_dict(self.other_critic.state_dict())
 
     @no_grad()
-    def soft_update_target_net(self, *targets: Literal["actor", "critic", "critic_other"], tau: float = 0.05):
+    def soft_update_target_net(self, *targets: Literal["actor", "critic", "critic_other"], tau: float = 0.005):
         """软更新 target 网络
 
         + 经典 A-C: C有C', A~没有~A'
@@ -219,14 +220,18 @@ class IAgentModel(IModel):
                 param_target.mul_(1.0 - tau)
                 param_target.add_(param.data, alpha=tau)
 
-    def forward(self,
-                states: Tensor, actions: Tensor | None = None,
-                output: Literal["action", "target_action", "q", "target_q", "target_q_sac"] = "action") -> Tensor:
+    def forward(self, states: Tensor, actions: Tensor | None = None,
+                output: str = "action") -> Tensor | tuple[Tensor, ...]:
         match output:
+            # Actions
             case "action":
                 return self._compute_action(states)
+            case "action_with_log_prob":
+                return self._compute_action_log_prob(states)
             case "target_action":
                 return self._compute_action_with_target_net(states)
+
+            # Q values
             case "q":
                 return self._compute_q(states, actions)
             case "q_other":
@@ -240,12 +245,17 @@ class IAgentModel(IModel):
 
     def _compute_action(self, states: Tensor) -> Tensor:
         """使用 actor 计算动作 a"""
-        action, *_ = self.actor(states)
+        action, _ = self.actor(states)
         return action
+
+    def _compute_action_log_prob(self, states: Tensor) -> tuple[Tensor, Tensor]:
+        """使用 actor 计算动作 a 及其对数概率 log_prob"""
+        action, log_prob = self.actor(states)
+        return action, log_prob
 
     def _compute_action_with_target_net(self, states: Tensor) -> Tensor:
         """使用 target actor 计算动作 a"""
-        action, *_ = self.target_actor(states)
+        action, _ = self.target_actor(states)
         return action
 
     def _compute_q_with_target_net(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
@@ -256,26 +266,23 @@ class IAgentModel(IModel):
 
     def _compute_q(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
         """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作"""
-
         actions = actions if actions is not None else self._compute_action(states)
         q = self.critic(states, actions)
         return q
 
     def _compute_q_other(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
         """使用其他 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作"""
-
         actions = actions if actions is not None else self._compute_action(states)
         q = self.other_critic(states, actions)
         return q
 
     def _compute_q_with_target_net_by_sac(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
         """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作. 该方法适用于 SAC 算法"""
-
-        actions, log_probs = actions if actions is not None else self.actor(states)
-
+        assert actions is None, "SAC 计算 target Q 时, 不允许传入 actions, 必须使用 actor 计算动作"
+        actions, log_probs = self.actor(states)
         entropy = -log_probs
-        target_q_1 = self.critic(states, actions)
-        target_q_2 = self.other_critic(states, actions)
+        target_q_1 = self.target_critic(states, actions)
+        target_q_2 = self.other_target_critic(states, actions)
 
         return torch.min(target_q_1, target_q_2) + self.log_alpha.exp() * entropy
 

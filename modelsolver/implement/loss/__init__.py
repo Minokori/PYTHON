@@ -23,7 +23,8 @@ class DefaultAgentLoss(IAgentLoss):
 
     def __init__(self) -> None:
         super().__init__()
-        self.rse: RelativeSquaredError = None  # type: ignore
+        self.rse_action: RelativeSquaredError = None  # type: ignore
+        self.rse_state: RelativeSquaredError = None  # type: ignore
 
     def forward(self,
                 predicted: Tensor,
@@ -45,14 +46,18 @@ class DefaultAgentLoss(IAgentLoss):
 
     def behavior_cloning_loss(self, predicted_action: Tensor, expert_action: Tensor) -> Tensor:
         B, C = predicted_action.shape
-        if self.rse is None:
-            self.rse = RelativeSquaredError(C).cuda()
-        return self.rse(predicted_action, expert_action)
+        if self.rse_action is None:
+            self.rse_action = RelativeSquaredError(C).cuda()
+        return self.rse_action(predicted_action, expert_action)
 
     def ddpg_actor_loss(self, predicted_q: Tensor) -> Tensor:
         return -mean(predicted_q)
 
     def ddpg_critic_loss(self, predicted_q: Tensor, target_q: Tensor) -> Tensor:
+        # if self.rse_state is None:
+        #     B,C = predicted_q.shape
+        #     self.rse_state = RelativeSquaredError(C).cuda()
+        # return self.rse_state(predicted_q, target_q)
         return mean(mse_loss(predicted_q, target_q))
 
     # TODO kwargs

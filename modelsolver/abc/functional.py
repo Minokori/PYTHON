@@ -53,13 +53,12 @@ class IOptimizer(ABC):
         def step(self): ...
         def __init__(self, model: IModel, config: HyperParameterConfig): ...
 
-    # def __init__(self, model: IModel, config: HyperParameterConfig):
-    #     self._config = config
+    def __init__(self, model: IModel, config: HyperParameterConfig):
+        self._config = config
 
 
     @property
-    @abstractmethod
-    def config(self): ...
+    def config(self): return self._config
 
     @property
     @abstractmethod
@@ -87,18 +86,25 @@ class IAgentLoss(ILoss, ABC):
     """强化学习智能体损失函数接口"""
 
     if TYPE_CHECKING:
-        def __call__(self, predicted: Tensor, label: Tensor | None = None, target: Literal["actor", "critic"] | str = "actor") -> Tensor:
+        def __call__(self,
+                     predicted: Tensor,
+                     label: Tensor | None = None,
+                     target: Literal["actor",
+                                     "critic"] | str = "actor",
+                     **kwargs: Tensor) -> Tensor:
             """由于强化学习智能体可能不同的部分需要使用不同的损失函数计算, 因此需要在调用时指定具体的目标"""
             ...
 
     @abstractmethod
-    def forward(self, predicted: Tensor, label: Tensor | None = None, target: Literal["actor", "critic"] | str = "actor") -> Tensor: ...
+    def forward(self, predicted: Tensor, label: Tensor | None = None,
+                target: Literal["actor", "critic"] | str = "actor", **kwargs: Tensor) -> Tensor: ...
 
 class IAgentScheduler(IScheduler, ABC):
     """学习率调度器"""
+
     @property
-    @abstractmethod
-    def config(self): ...
+    def scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
+        raise NotImplementedError("AgentScheduler 不实现 scheduler. 请使用具体的子调度器")
 
     @property
     @abstractmethod
@@ -128,35 +134,34 @@ class IAgentOptimizer(IOptimizer, ABC):
 
     def __init__(self, model: IModel, config: HyperParameterConfig):
         assert isinstance(model, IAgentModel), "model 必须是 IAgentModel 的实例"
-        self._config = config
+        super().__init__(model, config)
 
     @property
-    @abstractmethod
-    def config(self) -> HyperParameterConfig:
-        return self._config
+    def optimizer(self) -> Optimizer:
+        raise NotImplementedError("IAgentOptimizer 不实现 optimizer, 请使用 actor_optimizer 或 critic_optimizer")
 
     @property
     @abstractmethod
     def actor_optimizer(self) -> Optimizer:
         """返回 actor 的优化器"""
-        raise NotImplementedError
+        ...
 
     @property
     @abstractmethod
     def critic_optimizer(self) -> Optimizer:
         """返回 critic 的优化器"""
-        raise NotImplementedError
+        ...
 
     @property
     @abstractmethod
     def critic_other_optimizer(self) -> Optimizer:
         """返回 其他 critic 优化器"""
-        raise NotImplementedError
+        ...
 
     @property
     @abstractmethod
     def log_alpha_optimizer(self) -> Optimizer:
         """返回 alpha 的优化器"""
-        raise NotImplementedError
+        ...
 
 # endregion
