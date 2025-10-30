@@ -19,6 +19,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, random_split
+
 from modelsolver.abc.config import DataConfig, HyperParameterConfig
 from modelsolver.abc.data import (IDataLoader, IDataProcesser, IDataset,
                                   IReplayBuffer)
@@ -635,9 +636,8 @@ class AgentModelSolver(ModelSolver):
         while not done and not timeout:
 
             with no_grad():  # 和环境交互, 获得 (s, a, r, s', done) -> replay_buffer
-                # 模型 actor 采取动作, 并添加噪声
+                # 模型 actor 采取动作
                 action = self.model(state.cuda())
-                action = self._generate_action_noise(action, epoch).cuda()
                 # 在环境中执行动作, 获取下一个观测值和奖励
                 next_state, reward, done, timeout, info = self.environment.step(action.cpu().detach())
                 # 将数据存入回放池
@@ -746,12 +746,13 @@ class AgentModelSolver(ModelSolver):
                 # 计算 Critic 损失并更新参数 (减小 Q 和 Q_next 的差异)
                 critic_loss = self.loss_function(q, q_next, "ddpg_critic")
                 critic_loss_other = self.loss_function(q_other, q_next, "ddpg_critic")
-                self.critic_optimizer.zero_grad()
-                self.critic_other_optimizer.zero_grad()
 
+                self.critic_optimizer.zero_grad()
                 critic_loss.backward()
-                critic_loss_other.backward()
                 self.critic_optimizer.step()
+
+                self.critic_other_optimizer.zero_grad()
+                critic_loss_other.backward()
                 self.critic_other_optimizer.step()
                 # endregion
 
@@ -773,7 +774,8 @@ class AgentModelSolver(ModelSolver):
                 # endregion
 
                 # region 更新 alpha
-                alpha_loss = torch.mean(self.model.log_alpha.exp() * (entropy - self.model.target_entropy).detach())
+                alpha_loss = torch.mean(
+                    self.model.log_alpha.exp() * (entropy - self.model.config.target_entropy).detach())
                 self.log_alpha_optimizer.zero_grad()
                 alpha_loss.backward()
                 self.log_alpha_optimizer.step()
@@ -821,8 +823,3 @@ class AgentModelSolver(ModelSolver):
             ob_list.append(ob)
         return ob_list
 
-    def _generate_action_noise(self, action: Tensor, epoch: int, scale: float = 0.01) -> Tensor:
-        """TODO: 根据动作的标准差生成噪声"""
-
-        noise = randn_like(action) * scale
-        return (action + noise.detach()).clip(-1,1)

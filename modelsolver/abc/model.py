@@ -34,9 +34,15 @@ class IModel(ABC, Module):
 
 #region
 
-# TODO 为了兼容 SAC, 强制所有模型必须实现 输出 mean 和 std, 然后内置采样
 class IActor(ABC, Module):
-    """策略网络接口"""
+    """策略网络接口. 输入 s, 输出 a 和采样到 a 的 log_prob
+
+    ---
+    *需要重载的方法:*
+    + `_action_mean`
+    + `_action_std`
+    + `_forward`
+    """
 
     if TYPE_CHECKING:
         def __call__(self, state: Tensor) -> tuple[Tensor, ...]:
@@ -75,9 +81,9 @@ class IActor(ABC, Module):
     def forward(self, state: Tensor) -> tuple[Tensor, ...]:
         """前向传播, 输入状态 s, 输出动作 a, 以及动作的对数概率 log_prob"""
         x = self._forward(state)
-        action_mean = self._action_mean(x)
-        action_std = self._action_std(x)
-        return self._action_sample(action_mean, action_std)
+        action_mean, action_std = self._action_mean(x), self._action_std(x)
+        action, log_prob = self._action_sample(action_mean, action_std)
+        return action, log_prob
 
     def _action_sample(self, action_mean: Tensor, action_std: Tensor) -> tuple[Tensor, Tensor]:
         """从动作分布中采样动作, 并计算该动作的对数概率
@@ -93,7 +99,6 @@ class IActor(ABC, Module):
         log_prob = log_prob - torch.log(1 - torch.tanh(action).pow(2) + 1e-7)
         # action = action * self.action_bound
         return action, log_prob
-
 
 class ICritic(ABC, Module):
     """值网络接口"""
@@ -166,25 +171,29 @@ class IAgentModel(IModel):
         super().__init__()
         self._config = config
         self.actor = actor
+        """策略网络"""
         self.critic = critic
+        """值网络"""
         self.target_actor = target_actor
         self.target_critic = target_critic
         self.other_critic = other_critic
         self.other_target_critic = other_target_critic
 
         # 复制参数
-        if actor is not None and critic is not None:
-            self.target_actor.load_state_dict(actor.state_dict())
-            self.target_critic.load_state_dict(critic.state_dict())
-            self.other_critic.load_state_dict(other_critic.state_dict())
+        self.init_target_nets()
 
         # SAC 需要的 参数
         self.log_alpha = tensor(log(0.01), requires_grad=True, dtype=torch.float32)
-        self.target_entropy = -config.action_channels  # type: ignore
 
     @property
     def config(self) -> Any:
         return self._config
+
+    def init_target_nets(self):
+        """target 网络的参数从 actor 和 critic 复制"""
+        self.target_actor.load_state_dict(self.actor.state_dict())
+        self.target_critic.load_state_dict(self.critic.state_dict())
+        self.other_target_critic.load_state_dict(self.other_critic.state_dict())
 
     @no_grad()
     def soft_update_target_net(self, *targets: Literal["actor", "critic", "critic_other"], tau: float = 0.05):
@@ -268,6 +277,6 @@ class IAgentModel(IModel):
         target_q_1 = self.critic(states, actions)
         target_q_2 = self.other_critic(states, actions)
 
-        return torch.min(target_q_1, target_q_2) + torch.exp(self.log_alpha) * entropy
+        return torch.min(target_q_1, target_q_2) + self.log_alpha.exp() * entropy
 
 # endregion
