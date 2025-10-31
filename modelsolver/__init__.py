@@ -11,13 +11,12 @@ from clean_ioc import Container, DependencySettings, Lifespan
 from clean_ioc.registration_filters import with_name
 from matplotlib import pyplot as plt
 from matplotlib.font_manager import FontProperties
-from numpy import float32, mean
-from numpy.typing import NDArray
+from numpy import mean
 from torch import load, no_grad, save
 from torch.autograd import set_detect_anomaly
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import _LRScheduler
+from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, random_split
 
 from modelsolver.abc.config import DataConfig, HyperParameterConfig
@@ -184,7 +183,7 @@ class ModelSolver(Container):
 
     @property
     def optimizer(self) -> Optimizer:
-        return self.resolve(IOptimizer).optimizer
+        return self.resolve(IOptimizer)["all"]
 
     @property
     def scheduler(self):
@@ -387,8 +386,8 @@ class ModelSolver(Container):
 
                 for label_hat, label, length in zip(label_hats, labels, lengths):
 
-                    y_hat: dict[str, NDArray[float32]] = self.data_processer.postprocess(label_hat, target="label")
-                    y: dict[str, NDArray[float32]] = self.data_processer.postprocess(label, target="label")
+                    y_hat = self.data_processer.postprocess(label_hat, target="label")
+                    y = self.data_processer.postprocess(label, target="label")
 
                     keys = y_hat.keys()
                     fig, axes = plt.subplots(len(keys), 1)  # type: ignore
@@ -522,25 +521,25 @@ class AgentModelSolver(ModelSolver):
 
 # TODO other 的 step
     @property
-    def actor_scheduler(self) -> _LRScheduler:
+    def actor_scheduler(self) -> LRScheduler:
         scheduler = self.resolve(IScheduler)
         assert isinstance(scheduler, IAgentScheduler)
         return scheduler.actor_scheduler
 
     @property
-    def critic_scheduler(self) -> _LRScheduler:
+    def critic_scheduler(self) -> LRScheduler:
         scheduler = self.resolve(IScheduler)
         assert isinstance(scheduler, IAgentScheduler)
         return scheduler.critic_scheduler
 
     @property
-    def critic_other_scheduler(self) -> _LRScheduler:
+    def critic_other_scheduler(self) -> LRScheduler:
         scheduler = self.resolve(IScheduler)
         assert isinstance(scheduler, IAgentScheduler)
         return scheduler.critic_other_scheduler
 
     @property
-    def log_alpha_scheduler(self) -> _LRScheduler:
+    def log_alpha_scheduler(self) -> LRScheduler:
         scheduler = self.resolve(IScheduler)
         assert isinstance(scheduler, IAgentScheduler)
         return scheduler.log_alpha_scheduler
@@ -695,8 +694,9 @@ class AgentModelSolver(ModelSolver):
 
         # 计算 Actor 损失并更新参数 (最大化Q)
         # TODO 放到 loss function 中
-        actor_loss = torch.mean(
-            -self.model.log_alpha.exp() * entropy - torch.min(q, q_other))
+        actor_loss = self.loss_function(q, None, "sac_actor", q_other=q_other, log_prob=log_probs, log_alpha=self.model.log_alpha)
+        # actor_loss = torch.mean(
+        #     -self.model.log_alpha.exp() * entropy - torch.min(q, q_other))
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()

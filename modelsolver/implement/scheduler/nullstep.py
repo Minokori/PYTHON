@@ -1,24 +1,28 @@
-from torch.optim.lr_scheduler import LambdaLR, _LRScheduler
+from torch.optim.lr_scheduler import LRScheduler, LambdaLR
 
 from modelsolver.abc.config import HyperParameterConfig
 from modelsolver.abc.functional import (IAgentOptimizer, IAgentScheduler,
                                         IOptimizer, IScheduler)
 
 
-class NullScheduler(IScheduler, LambdaLR):
+class NullScheduler(IScheduler):
     """恒定学习率调度器"""
 
     def __init__(self, config: HyperParameterConfig, optimizer: IOptimizer):
         self._config = config
-        super().__init__(optimizer=optimizer.optimizer, lr_lambda=lambda epoch: self.config.learning_rate)
+        self._scheduler = LambdaLR(optimizer=optimizer["all"], lr_lambda=lambda epoch: self.config.learning_rate)
 
     @property
     def config(self) -> HyperParameterConfig:
         return self._config
 
-    @property
-    def scheduler(self) -> _LRScheduler:
-        return self  # type: ignore
+    def __getitem__(self, key: str) -> LambdaLR:
+        match key:
+            case "all" | "":
+                return self._scheduler  # type: ignore
+            case _:
+                raise KeyError(f"Unknown Scheduler key: {key}")
+
 
 
 class AgentNullScheduler(IAgentScheduler):
@@ -29,6 +33,20 @@ class AgentNullScheduler(IAgentScheduler):
         self._critic_scheduler = LambdaLR(optimizer=optimizer.critic_optimizer, lr_lambda=lambda epoch: self.config.critic_lr)
         self._critic_other_scheduler = LambdaLR(optimizer=optimizer.critic_other_optimizer, lr_lambda=lambda epoch: self.config.critic_lr)
         self._log_alpha_scheduler = LambdaLR(optimizer=optimizer.log_alpha_optimizer, lr_lambda=lambda epoch: self.config.learning_rate)
+
+
+    def __getitem__(self, key: str) -> LRScheduler:
+        match key:
+            case "actor":
+                return self._actor_scheduler
+            case "critic":
+                return self._critic_scheduler
+            case "critic_other":
+                return self._critic_other_scheduler
+            case "log_alpha":
+                return self._log_alpha_scheduler
+            case _:
+                raise KeyError(f"Unknown Scheduler key: {key}")
 
     @property
     def actor_scheduler(self) -> LambdaLR:

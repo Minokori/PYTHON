@@ -1,3 +1,4 @@
+# region imports
 import logging
 from dataclasses import dataclass, field
 from typing import Literal
@@ -5,6 +6,8 @@ from typing import Literal
 from dataclasses_json import dataclass_json
 from numpy import exp2, floor, log2
 
+
+# endregion
 
 # TODO agent hyper config
 @dataclass
@@ -91,5 +94,7 @@ class AgentHyperParameterConfig():
     actor_lr: float = 3e-4
     """Actor 的学习率"""
     critic_lr: float = 3e-3
+    """Critic 的学习率"""
+# endregion RL
     """Critic 的学习率"""
 # endregion RL

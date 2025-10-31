@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Literal
 from modelsolver.abc.functional import IAgentLoss
 from torch import Tensor, mean
+import torch
 from torchmetrics import RelativeSquaredError
 from .rse import RelativeSquaredErrorLoss
 from torch.nn.functional import mse_loss
@@ -31,16 +32,22 @@ class DefaultAgentLoss(IAgentLoss):
                 label: Tensor | None = None,
                 target: Literal["ddpg_actor",
                                 "ddpg_critic",
-                                "behavior_clone"] | str = "ddpg_actor") -> Tensor:
+                                "behavior_clone"] | str = "ddpg_actor", **kwargs: Tensor) -> Tensor:
         match target:
             case "ddpg_actor":
                 return self.ddpg_actor_loss(predicted)
-            case "ddpg_critic":
+            case "ddpg_critic" | "sac_critic":
                 assert label is not None, "Critic loss requires label tensor"
                 return self.ddpg_critic_loss(predicted, label)
             case "behavior_clone":
                 assert label is not None, "Behavior cloning loss requires label tensor"
                 return self.behavior_cloning_loss(predicted, label)
+            case "sac_actor":
+                q = predicted
+                q_other = kwargs["q_other"]
+                log_prob = kwargs["log_prob"]
+                log_alpha = kwargs["log_alpha"]
+                return self.sac_actor_loss(q, q_other, log_prob, log_alpha)
             case _:
                 raise ValueError(f"Unknown target for loss computation: {target}")
 
@@ -61,6 +68,9 @@ class DefaultAgentLoss(IAgentLoss):
         return mean(mse_loss(predicted_q, target_q))
 
     # TODO kwargs
-    def sac_actor_loss(self, predicted_q: Tensor) -> Tensor:
-        raise NotImplementedError("SAC actor loss is not implemented")
+    def sac_actor_loss(self, predicted_q: Tensor, predicted_q_other: Tensor, log_prob: Tensor, log_alpha: Tensor) -> Tensor:
+        entropy = -log_prob
+
+        return mean(-log_alpha.exp() * entropy - torch.min(predicted_q, predicted_q_other))
+
 # endregion

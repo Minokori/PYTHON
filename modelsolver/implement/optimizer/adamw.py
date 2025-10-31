@@ -1,4 +1,4 @@
-from torch.optim import AdamW, Optimizer,Adam
+from torch.optim import AdamW, Optimizer
 
 from modelsolver.abc.config import HyperParameterConfig
 from modelsolver.abc.functional import IAgentOptimizer, IOptimizer
@@ -17,10 +17,13 @@ class AdamWOptimizer(IOptimizer):
                        eps=config.eps,
                        weight_decay=config.weight_decay,
                        )
-    @property
-    def optimizer(self) -> Optimizer:
-        """返回优化器实例"""
-        return self._optimizer
+
+    def __getitem__(self, key: str) -> Optimizer:
+        match key:
+            case "all" | "":
+                return self._optimizer
+            case _:
+                raise KeyError(f"Unknown optimizer key: {key}")
 
 
 class AgentAdamWOptimizer(IAgentOptimizer):
@@ -55,17 +58,15 @@ class AgentAdamWOptimizer(IAgentOptimizer):
                                           weight_decay=config.weight_decay,
                                           )
 
-    @property
-    def actor_optimizer(self) -> Optimizer:
-        return self._actor_optimizer
-
-    @property
-    def critic_optimizer(self) -> Optimizer:
-        return self._critic_optimizer
-
-    @property
-    def critic_other_optimizer(self) -> Optimizer:
-        return self._critic_other_optimizer
-    @property
-    def log_alpha_optimizer(self) -> Optimizer:
-        return self._log_alpha_optimizer
+    def __getitem__(self, key: str) -> Optimizer:
+        match key:
+            case "actor":
+                return self._actor_optimizer
+            case "critic":
+                return self._critic_optimizer
+            case "critic_other":
+                return self._critic_other_optimizer
+            case "log_alpha":
+                return self._log_alpha_optimizer
+            case _:
+                raise KeyError(f"Unknown optimizer key: {key}")

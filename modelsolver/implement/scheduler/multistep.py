@@ -1,24 +1,25 @@
-import torch
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import LRScheduler, MultiStepLR
 
 from modelsolver.abc.config import HyperParameterConfig
 from modelsolver.abc.functional import (IAgentOptimizer, IAgentScheduler,
-                                        IOptimizer)
+                                        IOptimizer, IScheduler)
 
 
-class MultiStepScheduler(MultiStepLR):
+class MultiStepScheduler(IScheduler):
     def __init__(self, config: HyperParameterConfig, optimizer: IOptimizer):
-        super().__init__(optimizer=optimizer.optimizer, milestones=config.milestones, gamma=config.gamma)
         self._config = config
+        self._scheduler = MultiStepLR(optimizer=optimizer["all"], milestones=config.milestones, gamma=config.gamma)
 
     @property
     def config(self) -> HyperParameterConfig:
         return self._config
 
-    @property
-    def scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
-        return self  # type: ignore
-
+    def __getitem__(self, key: str) -> LRScheduler:
+        match key:
+            case "all" | "":
+                return self._scheduler  # type: ignore
+            case _:
+                raise KeyError(f"Unknown Scheduler key: {key}")
 
 class AgentMultiStepScheduler(IAgentScheduler):
     def __init__(self, config: HyperParameterConfig, optimizer: IOptimizer):
@@ -28,26 +29,21 @@ class AgentMultiStepScheduler(IAgentScheduler):
         self._critic_scheduler = MultiStepLR(optimizer=optimizer.critic_optimizer, milestones=config.milestones, gamma=config.gamma)
         self._critic_other_scheduler = MultiStepLR(optimizer=optimizer.critic_other_optimizer, milestones=config.milestones, gamma=config.gamma)
         self._log_alpha_scheduler = MultiStepLR(optimizer=optimizer.log_alpha_optimizer, milestones=config.milestones, gamma=config.gamma)
-    @property
-    def actor_scheduler(self) -> MultiStepLR:
-        return self._actor_scheduler
 
-    @property
-    def critic_scheduler(self) -> MultiStepLR:
-        return self._critic_scheduler
+    def __getitem__(self, key: str) -> LRScheduler:
+        match key:
+            case "actor":
+                return self._actor_scheduler
+            case "critic":
+                return self._critic_scheduler
+            case "critic_other":
+                return self._critic_other_scheduler
+            case "log_alpha":
+                return self._log_alpha_scheduler
+            case _:
+                raise KeyError(f"Unknown Scheduler key: {key}")
 
-    @property
-    def critic_other_scheduler(self) -> MultiStepLR:
-        return self._critic_other_scheduler
-
-    @property
-    def log_alpha_scheduler(self) -> MultiStepLR:
-        return self._log_alpha_scheduler
 
     @property
     def config(self) -> HyperParameterConfig:
         return self._config
-
-    @property
-    def scheduler(self) -> MultiStepLR:
-        raise NotImplementedError("IAgentScheduler 不实现 scheduler, 请使用 actor_scheduler 或 critic_scheduler")
