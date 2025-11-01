@@ -48,7 +48,7 @@ class ModelSolver(Container):
         self.register(FontProperties, instance=FontProperties("./data/SourceHanSansLite.ttf", size=14))
 
         # 训练过程中的损失记录
-        self.stats = self.init_stats()
+        self.stats = self._init_stats()
 
         # 子 ioc 容器, 构建模型和数据加载器
         self._model_builder = Container()
@@ -62,27 +62,25 @@ class ModelSolver(Container):
         self.add_lr_scheduler(NullScheduler)
 
     # region 注册损失函数, 优化器, 学习率调度器, 配置项, 数据处理器, 使 ioc 更易用
-    def add_loss_function(self, loss_function: type[ILoss], name: str | None = None):
+    def add_loss_function(self, loss_function: type[ILoss]):
         """注册损失函数"""
-        self.register(ILoss, loss_function, lifespan=Lifespan.singleton, name=name)
+        self.register(ILoss, loss_function, lifespan=Lifespan.singleton)
         return self
 
-    def add_optimizer(self, optimizer: type[IOptimizer], name: str | None = None):
+    def add_optimizer(self, optimizer: type[IOptimizer]):
         """注册优化器.
 
         + 若没有指定优化器, 则使用 AdamW 作为默认优化器.
         """
-        self.register(IOptimizer, implementation_type=optimizer, lifespan=Lifespan.singleton, name=name)
+        self.register(IOptimizer, implementation_type=optimizer, lifespan=Lifespan.singleton)
         return self
 
+    def add_lr_scheduler(self, lr_scheduler: type[IScheduler]):
+        """注册学习率调度器
 
-    def add_lr_scheduler(self, lr_scheduler: type[IScheduler], *name: str | None):
-        """注册学习率调度器"""
-        if not name:
-            self.register(IScheduler, lr_scheduler, lifespan=Lifespan.singleton)
-        else:
-            for n in name:
-                self.register(IScheduler, lr_scheduler, lifespan=Lifespan.singleton, name=n)
+        + 若没有指定学习率调度器, 则使用 NullScheduler 作为默认学习率调度器. (不会动态调整学习率)
+        """
+        self.register(IScheduler, lr_scheduler, lifespan=Lifespan.singleton)
         return self
 
     def add_config(self, config: Any, name: str | None = None):
@@ -187,7 +185,7 @@ class ModelSolver(Container):
 
     @property
     def scheduler(self):
-        return self.resolve(IScheduler).scheduler
+        return self.resolve(IScheduler)["all"]
 
     @property
     def loss_function(self):
@@ -232,7 +230,7 @@ class ModelSolver(Container):
         return self.stats["test_loss"]
     # endregion
 
-    def init_stats(self) -> dict[str, list[float]]:
+    def _init_stats(self) -> dict[str, list[float]]:
         return {
             "train_loss": [],
             "test_loss": [],

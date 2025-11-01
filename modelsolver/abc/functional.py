@@ -86,11 +86,6 @@ class IScheduler(ABC):
     """
 
     @property
-    def scheduler(self) -> LRScheduler:
-        return self  # type: ignore
-
-
-    @property
     @abstractmethod
     def config(self): ...
 
