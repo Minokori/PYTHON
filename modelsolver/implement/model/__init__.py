@@ -1,6 +1,7 @@
 from torch import Tensor
 
-from modelsolver.abc.model import IActor, ICritic
+from modelsolver.abc.config import AgentConfig
+from modelsolver.abc.model import IActor, IAgentModel, ICritic
 
 
 class NullActor(IActor):
@@ -21,3 +22,29 @@ class NullCritic(ICritic):
 
     def forward(self, state: Tensor, action: Tensor) -> Tensor:
         raise NotImplementedError("占位Critic网络不实现forward方法")
+
+
+class DefaultAgent(IAgentModel):
+    """默认智能体模型, 适用于大多数算法.
+
+    配置类为 `modelsolver.abc.config.AgentConfig`.
+    """
+
+    def __init__(
+            self,
+            actor: IActor,
+            critic: ICritic,
+            target_actor: IActor,
+            target_critic: ICritic,
+            other_critic: ICritic,
+            other_target_critic: ICritic,
+            config: AgentConfig):
+        super().__init__(actor, critic, target_actor, target_critic, other_critic, other_target_critic, config)
+
+    @property
+    def config(self) -> AgentConfig:
+        return self._config  # type: ignore
+
+    @property
+    def name_for_save(self) -> str:
+        return "DefaultAgent"

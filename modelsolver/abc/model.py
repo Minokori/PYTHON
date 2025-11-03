@@ -141,7 +141,7 @@ class IAgentModel(IModel):
                                      "action_with_log_prob",
                                      "q", "q_other",
                                      "target_q",
-                                     "target_q_sac"] = "action", ** kwargs) -> Tensor:
+                                     "target_q_sac", "target_q_td3"] = "action", ** kwargs) -> Tensor:
             """
             + 输入 s, 返回 a (策略计算)
             + 输入 (s,a), 返回 q (值计算)
@@ -240,6 +240,8 @@ class IAgentModel(IModel):
                 return self._compute_q_with_target_net(states, actions)
             case "target_q_sac":
                 return self._compute_q_with_target_net_by_sac(states, actions)
+            case "target_q_td3":
+                return self._compute_q_with_target_net_by_td3(states, actions)
             case _:
                 raise ValueError("output must be 'action', 'target_action', 'q' or 'target_q'")
 
@@ -286,4 +288,11 @@ class IAgentModel(IModel):
 
         return torch.min(target_q_1, target_q_2) + self.log_alpha.exp() * entropy
 
-# endregion
+    def _compute_q_with_target_net_by_td3(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
+        """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作. 该方法适用于 SAC 算法"""
+        assert actions is None, "SAC 计算 target Q 时, 不允许传入 actions, 必须使用 actor 计算动作"
+        actions, log_probs = self.target_actor(states)
+        target_q_1 = self.target_critic(states, actions)
+        target_q_2 = self.other_target_critic(states, actions)
+
+        return torch.min(target_q_1, target_q_2)

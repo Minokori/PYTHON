@@ -34,6 +34,8 @@ class HyperParameterConfig:
     """Actor 的学习率"""
     critic_lr: float = 3e-3
     """Critic 的学习率"""
+    policy_delay: int = 5
+    """策略网络更新延迟系数"""
 
 
 
@@ -84,6 +86,7 @@ class ReplayBufferConfig:
     """每个采样批次的大小"""
 
 
+
 @dataclass_json
 @dataclass
 class AgentHyperParameterConfig():
@@ -95,6 +98,15 @@ class AgentHyperParameterConfig():
     """Actor 的学习率"""
     critic_lr: float = 3e-3
     """Critic 的学习率"""
-# endregion RL
-    """Critic 的学习率"""
+
+
+@dataclass_json
+@dataclass
+class AgentConfig:
+    state_channels: int
+    action_channels: int
+    hidden_channels: int
+    target_entropy: float
+    """目标熵. 一般设置为 `-action_channels`"""
+
 # endregion RL

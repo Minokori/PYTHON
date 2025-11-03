@@ -28,7 +28,7 @@ from modelsolver.abc.functional import (IAgentLoss, IAgentOptimizer,
                                         IScheduler)
 from modelsolver.abc.model import IActor, IAgentModel, ICritic, IModel
 from modelsolver.implement.loss import DefaultAgentLoss
-from modelsolver.implement.model import NullActor, NullCritic
+from modelsolver.implement.model import DefaultAgent, NullActor, NullCritic
 from modelsolver.implement.optimizer.adamw import (AdamWOptimizer,
                                                    AgentAdamWOptimizer)
 from modelsolver.implement.scheduler.nullstep import (AgentNullScheduler,
@@ -438,6 +438,7 @@ class AgentModelSolver(ModelSolver):
         # 默认 Actor 和 Critic 的占位符
         self.add_model_component(IActor, NullActor)
         self.add_model_component(ICritic, NullCritic)
+        self.add_model_component(IModel, DefaultAgent, singleton=True)
 
         # 默认的 optimizer
         self.add_optimizer(AgentAdamWOptimizer)
@@ -451,9 +452,20 @@ class AgentModelSolver(ModelSolver):
         # 默认的 scheduler
         self.add_lr_scheduler(AgentNullScheduler)
 
+    def add_actor_component(self, actor: type[IActor]):
+        self.add_model_component(IActor, actor)
+        return self
+
+    def add_critic_component(self, critic: type[ICritic]):
+        self.add_model_component(ICritic, critic)
+        return self
+
+
+
     def add_model(self, model: IAgentModel | type[IAgentModel]):
         """添加智能体模型"""
         return super().add_model(model)
+
 
     def add_environment_config(self, environment_config: Any) -> Self:
         assert is_dataclass(environment_config), "config must be a dataclass"
@@ -560,7 +572,7 @@ class AgentModelSolver(ModelSolver):
         return self.stats["critic_losses"]
     # endregion
 
-    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac"] = "behavior_cloning"):
+    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac", "td3"] = "behavior_cloning"):
         self.model.train()
         # 清空 scheduler 计数器
         self.actor_scheduler.last_epoch = -1
@@ -575,27 +587,37 @@ class AgentModelSolver(ModelSolver):
                     if print_interval > 0 and epoch % print_interval == 0:
                         print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
                 self.model.soft_update_target_net("actor", tau=1.0)
-            case "ddpg":
+            case "ddpg" | "sac" | "td3" as offline_method:
                 for epoch in range(self.config.epoch):
                     has_train = False
                     while not has_train:
-                        has_train = self.train_single_epoch_offline(epoch, method="ddpg")
+                        has_train = self.train_single_epoch_offline(epoch, method=offline_method)
 
                     if print_interval > 0 and epoch % print_interval == 0:
                         if len(self.train_actor_losses) > 0:
                             print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
                                   f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
                                   f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
-            case "sac":
-                for epoch in range(self.config.epoch):
-                    has_train = False
-                    while not has_train:
-                        has_train = self.train_single_epoch_offline(epoch, method="sac")
-                    if print_interval > 0 and epoch % print_interval == 0:
-                        if len(self.train_actor_losses) > 0:
-                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
-                                  f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
-                                  f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
+            # case "sac":
+            #     for epoch in range(self.config.epoch):
+            #         has_train = False
+            #         while not has_train:
+            #             has_train = self.train_single_epoch_offline(epoch, method="sac")
+            #         if print_interval > 0 and epoch % print_interval == 0:
+            #             if len(self.train_actor_losses) > 0:
+            #                 print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
+            #                       f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
+            #                       f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
+            # case "td3":
+            #     for epoch in range(self.config.epoch):
+            #         has_train = False
+            #         while not has_train:
+            #             has_train = self.train_single_epoch_offline(epoch, method="td3")
+            #         if print_interval > 0 and epoch % print_interval == 0:
+            #             if len(self.train_actor_losses) > 0:
+            #                 print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
+            #                       f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
+            #                       f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
 
     def train_single_step_through_behavior_cloning(self):
 
@@ -651,8 +673,6 @@ class AgentModelSolver(ModelSolver):
         # 软更新目标网络
         self.model.soft_update_target_net("actor", "critic")
 
-        print(f"Actor Loss: {actor_loss.item():.4f}, Critic Loss: {critic_loss.item():.4f}")
-
     def train_through_sac(self, epoch: int):
 
         # 解压数据
@@ -691,10 +711,7 @@ class AgentModelSolver(ModelSolver):
         q_other = self.model(states.cuda(), predicted_actions, "q_other")
 
         # 计算 Actor 损失并更新参数 (最大化Q)
-        # TODO 放到 loss function 中
         actor_loss = self.loss_function(q, None, "sac_actor", q_other=q_other, log_prob=log_probs, log_alpha=self.model.log_alpha)
-        # actor_loss = torch.mean(
-        #     -self.model.log_alpha.exp() * entropy - torch.min(q, q_other))
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
@@ -716,17 +733,52 @@ class AgentModelSolver(ModelSolver):
         # 软更新目标网络
         self.model.soft_update_target_net("critic", "critic_other")
 
-        print(
-            f"Actor Loss: {
-                actor_loss.item():.4f}, Critic1 Loss: {
-                critic_loss.item():.4f}, Critic2 Loss: {
-                critic_other_loss.item():.4f}, Alpha Loss: {
-                alpha_loss.item():.4f}")
+    def train_through_td3(self, epoch: int, delta: int):
+
+        # 解压数据
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample()
+
+        with no_grad():
+            q_next = self.model(next_states.cuda(), None, "target_q_td3")
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.cuda())
+
+        q = self.model(states.cuda(), actions.cuda(), "q")
+        q_other = self.model(states.cuda(), actions.cuda(), "q_other")
+
+        q_loss = self.loss_function(q, q_target, "ddpg_critic")
+        q_other_loss = self.loss_function(q_other, q_target, "ddpg_critic")
+
+        self.critic_optimizer.zero_grad()
+        q_loss.backward()
+        clip_grad_norm_(self.model.critic.parameters(), 1.0)
+        self.critic_optimizer.step()
+
+        self.critic_other_optimizer.zero_grad()
+        q_other_loss.backward()
+        clip_grad_norm_(self.model.other_critic.parameters(), 1.0)
+        self.critic_other_optimizer.step()
+
+        if delta % self.config.policy_delay == 0:
+            q = torch.min(self.model(states.cuda(), None, "q"), self.model(states.cuda(), None, "q_other"))
+            actor_loss = self.loss_function(q, None, target="ddpg_actor")
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            clip_grad_norm_(self.model.actor.parameters(), 1.0)
+            self.actor_optimizer.step()
+
+            self.model.soft_update_target_net("critic", "critic_other", "actor")
+            print(f"Actor Loss: {actor_loss.item():.4f}")
+
+        print(f"Critic Loss 1: {q_loss.item():.4f}, Critic Loss 2: {q_other_loss.item():.4f}")
+
+
+
 
     def train_single_epoch_offline(self, epoch: int, method: str) -> bool:
         # region 单步训练前准备
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
         total_r= reward # 累计奖励和标志位
+        delta = 0
         # endregion
 
         while not done and not timeout:
@@ -748,6 +800,9 @@ class AgentModelSolver(ModelSolver):
                         self.train_through_ddpg(epoch)
                     case "sac":
                         self.train_through_sac(epoch)
+                    case "td3":
+                        self.train_through_td3(epoch, delta)
+                        delta += 1
 
         # 更新学习率
         match method:
@@ -759,7 +814,12 @@ class AgentModelSolver(ModelSolver):
                 self.critic_scheduler.step()
                 self.critic_other_scheduler.step()
                 self.log_alpha_scheduler.step()
+            case "td3":
+                self.actor_scheduler.step()
+                self.critic_scheduler.step()
+                self.critic_other_scheduler.step()
         return True
+
 
 
     @no_grad()
