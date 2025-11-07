@@ -35,7 +35,9 @@ class IModel(ABC, Module):
 # region RL
 
 class IActor(ABC, Module):
-    """策略网络接口. 输入 s, 输出 a 和采样到 a 的 log_prob
+    """策略网络接口. 输入 s, 输出 a 和采样到 a 的 log_prob.
+
+    输出的动作取值范围在 [-1, 1] 之间.
 
     ---
     *需要重载的方法:*
@@ -91,7 +93,8 @@ class IActor(ABC, Module):
         + 动作值域在 [-1, 1]
         """
         dist = Normal(action_mean, action_std)
-        sampled_action = dist.rsample()  # rsample()是重参数化采样
+        sampled_action = dist.rsample()
+        
         log_prob = dist.log_prob(sampled_action)
 
         action = torch.tanh(sampled_action)
@@ -296,3 +299,4 @@ class IAgentModel(IModel):
         target_q_2 = self.other_target_critic(states, actions)
 
         return torch.min(target_q_1, target_q_2)
+#endregion

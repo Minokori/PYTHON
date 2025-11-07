@@ -1,7 +1,7 @@
 # region imports
 import logging
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from dataclasses_json import dataclass_json
 from numpy import exp2, floor, log2
@@ -9,9 +9,18 @@ from numpy import exp2, floor, log2
 
 # endregion
 
+@dataclass_json
+@dataclass
+class IConfig:
+    if TYPE_CHECKING:
+        def to_json(self) -> str:
+            """以 JSON 格式返回对象的字符串表示"""
+            ...
+
+
 # TODO agent hyper config
 @dataclass
-class HyperParameterConfig:
+class HyperParameterConfig(IConfig):
     """超参数配置"""
     learning_rate: float = 1e-3
     """学习率"""

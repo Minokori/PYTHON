@@ -625,7 +625,7 @@ class AgentModelSolver(ModelSolver):
 
         for batch in self.train_dataloader:
             states, actions = self.data_processer.preprocess(batch)
-            predicted_actions = self.model(states)
+            predicted_actions = self.model(states,None,"action")
 
             loss = self.loss_function(predicted_actions, actions, "behavior_clone")
             self.actor_optimizer.zero_grad()
