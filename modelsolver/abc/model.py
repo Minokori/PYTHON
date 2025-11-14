@@ -94,13 +94,13 @@ class IActor(ABC, Module):
         """
         dist = Normal(action_mean, action_std)
         sampled_action = dist.rsample()
-        
-        log_prob = dist.log_prob(sampled_action)
 
+        log_prob = dist.log_prob(sampled_action)
         action = torch.tanh(sampled_action)
         # 计算tanh_normal分布的对数概率密度
         log_prob = log_prob - torch.log(1 - action.pow(2) + 1e-7)
-        # action = action *2  # TODO: 根据环境修改动作范围
+        # 把动作维度求和，变为 (batch, 1)
+        log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob
 
 class ICritic(ABC, Module):

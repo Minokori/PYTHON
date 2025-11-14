@@ -2,8 +2,10 @@
 
 
 # region import
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Self, TypedDict
 
+import gymnasium
+import torch
 from highway_env.envs import ParkingEnv
 from highway_env.envs.common.observation import \
     KinematicsGoalObservation as _KinematicsGoalObservation
@@ -360,3 +362,32 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         # assert ob == achieved_goal
         desired_goal = observation["desired_goal"]
         return concatenate([from_numpy(ob), from_numpy(desired_goal)], dim=0)
+
+
+class DefaultParkingEnv(IEnvironment):
+
+    _ZERO_ACTION = torch.zeros(2)
+
+    def __init__(self) -> None:
+        self.highway_parking = gymnasium.make("parking-v0")
+
+    def reset(self):
+        self.highway_parking.reset()
+        return self.step(self._ZERO_ACTION)
+
+    def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
+        ob, r, done, timeout, info = self.highway_parking.step(action.cpu().detach().numpy())
+
+        return self._convert_observation(ob), tensor(r).reshape(1), tensor(done, dtype=torch.float32), timeout, info
+
+    def _convert_observation(self, observation: ObservationDict) -> Tensor:
+        """将 highway-env 返回的字典格式观测转为 Tenor"""
+        ob = observation["observation"]
+        achieved_goal = observation["achieved_goal"]
+
+        # assert ob == achieved_goal
+        desired_goal = observation["desired_goal"]
+        return concatenate([from_numpy(ob), from_numpy(desired_goal)], dim=0)
+
+    def build_environment(self, **kwargs) -> Self:
+        return self

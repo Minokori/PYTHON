@@ -589,6 +589,7 @@ class AgentModelSolver(ModelSolver):
                 self.model.soft_update_target_net("actor", tau=1.0)
             case "ddpg" | "sac" | "td3" as offline_method:
                 for epoch in range(self.config.epoch):
+
                     has_train = False
                     while not has_train:
                         has_train = self.train_single_epoch_offline(epoch, method=offline_method)
@@ -597,27 +598,7 @@ class AgentModelSolver(ModelSolver):
                         if len(self.train_actor_losses) > 0:
                             print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
                                   f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
-                                  f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
-            # case "sac":
-            #     for epoch in range(self.config.epoch):
-            #         has_train = False
-            #         while not has_train:
-            #             has_train = self.train_single_epoch_offline(epoch, method="sac")
-            #         if print_interval > 0 and epoch % print_interval == 0:
-            #             if len(self.train_actor_losses) > 0:
-            #                 print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
-            #                       f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
-            #                       f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
-            # case "td3":
-            #     for epoch in range(self.config.epoch):
-            #         has_train = False
-            #         while not has_train:
-            #             has_train = self.train_single_epoch_offline(epoch, method="td3")
-            #         if print_interval > 0 and epoch % print_interval == 0:
-            #             if len(self.train_actor_losses) > 0:
-            #                 print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
-            #                       f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
-            #                       f"Critic Loss: {self.train_critic_losses[-1]:.4f}, Reward: {self.train_rewards[-1]:.4f}")
+                                  f"Critic Loss: {self.train_critic_losses[-1]:.4f}")
 
     def train_single_step_through_behavior_cloning(self):
 
