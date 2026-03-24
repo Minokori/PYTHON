@@ -1,3 +1,4 @@
+"""配置模块, 定义了各种配置类, 包括数据配置、超参数配置、强化学习相关配置等"""
 # region imports
 import logging
 from dataclasses import dataclass, field
@@ -45,6 +46,8 @@ class HyperParameterConfig(IConfig):
     """Critic 的学习率"""
     policy_delay: int = 5
     """策略网络更新延迟系数"""
+    batch_size: int = 8
+    """每个批次的大小"""
 
 
 
@@ -79,7 +82,7 @@ class DataConfig:
             logging.warning(f"批量大小 {self.batch_size} 不是 2 的指数倍, 考虑将其设置为 {exp2(t_int)} 或 {exp2(t_int + 1)}")
 
 
-# region RL
+# region 强化学习相关配置类
 @dataclass_json
 @dataclass
 class ReplayBufferConfig:
@@ -118,4 +121,4 @@ class AgentConfig:
     target_entropy: float
     """目标熵. 一般设置为 `-action_channels`"""
 
-# endregion RL
+# endregion

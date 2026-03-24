@@ -1,3 +1,4 @@
+"""数据模块, 定义了数据集接口、数据处理器接口、数据加载器接口以及强化学习相关的经验回放池接口"""
 # region imports
 from abc import ABC, abstractmethod
 from collections import deque
@@ -59,7 +60,7 @@ class IDataLoader(DataLoader):
         def __next__(self) -> tuple[Tensor, ...]: ...
 
 
-# region RL
+# region 强化学习相关接口
 class IReplayBuffer(IDataset, ABC):
     """经验回放池接口
 

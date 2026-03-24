@@ -424,6 +424,7 @@ class ModelSolver(Container):
         plt.show()
     # endregion
 
+
 class AgentModelSolver(ModelSolver):
 
     # region environment 相关函数, override 函数签名 (提供类型检查)
@@ -460,12 +461,9 @@ class AgentModelSolver(ModelSolver):
         self.add_model_component(ICritic, critic)
         return self
 
-
-
     def add_model(self, model: IAgentModel | type[IAgentModel]):
         """添加智能体模型"""
         return super().add_model(model)
-
 
     def add_environment_config(self, environment_config: Any) -> Self:
         assert is_dataclass(environment_config), "config must be a dataclass"
@@ -567,6 +565,7 @@ class AgentModelSolver(ModelSolver):
     @property
     def train_actor_losses(self) -> list[float]:
         return self.stats["actor_losses"]
+
     @property
     def train_critic_losses(self) -> list[float]:
         return self.stats["critic_losses"]
@@ -606,7 +605,7 @@ class AgentModelSolver(ModelSolver):
 
         for batch in self.train_dataloader:
             states, actions = self.data_processer.preprocess(batch)
-            predicted_actions = self.model(states,None,"action")
+            predicted_actions = self.model(states, None, "action")
 
             loss = self.loss_function(predicted_actions, actions, "behavior_clone")
             self.actor_optimizer.zero_grad()
@@ -752,13 +751,10 @@ class AgentModelSolver(ModelSolver):
 
         print(f"Critic Loss 1: {q_loss.item():.4f}, Critic Loss 2: {q_other_loss.item():.4f}")
 
-
-
-
     def train_single_epoch_offline(self, epoch: int, method: str) -> bool:
         # region 单步训练前准备
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
-        total_r= reward # 累计奖励和标志位
+        total_r = reward  # 累计奖励和标志位
         delta = 0
         # endregion
 
@@ -801,8 +797,6 @@ class AgentModelSolver(ModelSolver):
                 self.critic_other_scheduler.step()
         return True
 
-
-
     @no_grad()
     def evalute_on_environment(self,):
         self.model.eval()
@@ -814,4 +808,6 @@ class AgentModelSolver(ModelSolver):
             action = self.model(ob.cuda())
             ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
             ob_list.append(ob)
+        return ob_list
+        ob_list.append(ob)
         return ob_list

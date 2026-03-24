@@ -10,6 +10,48 @@ from torch.distributions import Normal
 from torch.nn import Module
 
 
+class IModule(ABC, Module):
+    """模块接口, 定义了模型的基本结构和方法, 包括前向传播和反向传播等"""
+
+    if TYPE_CHECKING:
+        def forward(self, x: Tensor) -> Tensor:
+            """前向传播
+
+            Args:
+                x (Tensor): 输入张量
+
+            Returns:
+                output (Tensor): 输出张量
+            """
+            ...
+
+class IActivateFunction(ABC, Module):
+    """激活函数接口, 定义了前向传播和反向传播方法"""
+
+    if TYPE_CHECKING:
+        def forward(self, x: Tensor) -> Tensor:
+            """前向传播
+
+            Args:
+                x (Tensor): 输入张量
+
+            Returns:
+                output (Tensor): 输出张量
+            """
+            ...
+
+        def reverse(self, x: Tensor) -> Tensor:
+            """反向传播
+
+            Args:
+                x (Tensor): 前向传播的输出张量
+
+            Returns:
+                input (Tensor): 前向传播的输入张量
+            """
+            ...
+
+
 class IModel(ABC, Module):
     """模型接口
     """
