@@ -14,12 +14,13 @@ from numpy import exp2, floor, log2
 @dataclass
 class IConfig:
     if TYPE_CHECKING:
-        def to_json(self) -> str:
+        def to_json(self, /, ensure_ascii=False, indent=4) -> str:
             """以 JSON 格式返回对象的字符串表示"""
             ...
 
 
 # TODO agent hyper config
+@dataclass_json
 @dataclass
 class HyperParameterConfig(IConfig):
     """超参数配置"""
@@ -53,7 +54,7 @@ class HyperParameterConfig(IConfig):
 
 
 
-
+# TODO 改成 IDataConfig, 目前这里面的配置项并不通用
 @dataclass_json
 @dataclass
 class DataConfig:

@@ -123,6 +123,7 @@ class ModelSolver(Container):
         return self
 
     def add_model_config(self, config: Any, name: str | None = None):
+
         assert is_dataclass(config), "config 不是 dataclass"
         self._model_builder.register(type(config), instance=config, lifespan=Lifespan.singleton, name=name)
         return self
@@ -135,7 +136,12 @@ class ModelSolver(Container):
         return self
 
     def add_data_config(self, config: DataConfig):
-        self._dataloader_builder.register(DataConfig, instance=config, lifespan=Lifespan.singleton)
+        if issubclass(type(config), DataConfig) and type(config) != DataConfig: # 自己实现的DataConfig类
+            self._dataloader_builder.register(type(config), instance=config, lifespan=Lifespan.singleton)
+            self._dataloader_builder.register(DataConfig, instance=config, lifespan=Lifespan.singleton)
+            # 目前好像只有这一种方法, 经过检验所注册单例的id(), 确认不会创建副本.
+        else:
+            self._dataloader_builder.register(DataConfig, instance=config, lifespan=Lifespan.singleton)
         return self
 
     def _build_dataloader(self):
@@ -260,6 +266,7 @@ class ModelSolver(Container):
             self.optimizer.zero_grad()
 
             # forward
+            # TODO 如何让 model 的 关键字参数和自定义 IModel接受的其他参数匹配
             predict_state, label_state, state_length = self.model(sample_batch, state=label_batch)
 
             # compute loss
@@ -290,8 +297,10 @@ class ModelSolver(Container):
 
         with set_detect_anomaly(True, True):
             for epoch in range(self.config.epoch):
-                train_loss = self.train_single_epoch(epoch)
+                # TODO 现在是训练损失->step->test损失, 会导致最后一个epoch的训练损失和测试损失不在同一个step上, 需要调整为训练损失->测试损失->step
                 test_loss, other_stats = self._evaluate()
+                train_loss = self.train_single_epoch(epoch)
+                
 
                 self.train_losses.append(train_loss)
                 self.test_losses.append(test_loss)

@@ -4,7 +4,6 @@ from dataclasses import field
 from typing import Self
 
 import pandas as pd
-
 from modelsolver.abc.config import DataConfig
 from modelsolver.abc.data import IDataset
 
@@ -21,7 +20,7 @@ class PandasDataConfig(DataConfig):
 # TODO config:DataConfig 的子类, 用于 PandasDataset
 class PandasDataset(IDataset):
     """使用 Pandas DataFrame 作为数据集的基础类"""
-    def __init__(self, config: DataConfig):
+    def __init__(self, config: PandasDataConfig):
         self._dataframe = pd.read_pickle(config.pickle_file_path)
 
     def __getitem__(self, index: int | list[int] | slice) -> pd.DataFrame:
