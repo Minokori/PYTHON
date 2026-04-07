@@ -300,7 +300,7 @@ class ModelSolver(Container):
                 # TODO 现在是训练损失->step->test损失, 会导致最后一个epoch的训练损失和测试损失不在同一个step上, 需要调整为训练损失->测试损失->step
                 test_loss, other_stats = self._evaluate()
                 train_loss = self.train_single_epoch(epoch)
-                
+
 
                 self.train_losses.append(train_loss)
                 self.test_losses.append(test_loss)
@@ -580,7 +580,7 @@ class AgentModelSolver(ModelSolver):
         return self.stats["critic_losses"]
     # endregion
 
-    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac", "td3"] = "behavior_cloning"):
+    def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac", "td3","irl"] = "behavior_cloning"):
         self.model.train()
         # 清空 scheduler 计数器
         self.actor_scheduler.last_epoch = -1
@@ -595,6 +595,12 @@ class AgentModelSolver(ModelSolver):
                     if print_interval > 0 and epoch % print_interval == 0:
                         print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
                 self.model.soft_update_target_net("actor", tau=1.0)
+            case "irl":
+                for epoch in range(self.config.epoch):
+                    self.train_single_step_through_irl()
+                    if print_interval > 0 and epoch % print_interval == 0:
+                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+
             case "ddpg" | "sac" | "td3" as offline_method:
                 for epoch in range(self.config.epoch):
 
@@ -805,6 +811,23 @@ class AgentModelSolver(ModelSolver):
                 self.critic_scheduler.step()
                 self.critic_other_scheduler.step()
         return True
+
+
+    def train_single_step_through_irl(self):
+        loss_on_total_dataset= []
+        for batch in self.train_dataloader:
+            states, actions = self.data_processer.preprocess(batch)
+            predicted_q = self.model(states, actions, "q")
+
+            loss = self.loss_function(predicted_q, None, "irl")
+            self.critic_optimizer.zero_grad()
+            loss.backward()
+            self.critic_optimizer.step()
+            loss_on_total_dataset.append(loss.item())
+
+        self.critic_scheduler.step()
+        self.train_critic_losses.append(mean(loss_on_total_dataset).item())
+        pass
 
     @no_grad()
     def evalute_on_environment(self,):

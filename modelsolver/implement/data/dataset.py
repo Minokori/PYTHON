@@ -1,21 +1,31 @@
 """预实现的数据集类"""
 
-from dataclasses import field
-from typing import Self
+from dataclasses import dataclass, field
+from typing import Literal, Self
 
 import pandas as pd
+from dataclasses_json import dataclass_json
 from modelsolver.abc.config import DataConfig
 from modelsolver.abc.data import IDataset
 
 
+@dataclass_json
+@dataclass
 class PandasDataConfig(DataConfig):
     """使用 Pandas DataFrame 作为数据集的配置类"""
-    pickle_file_path:str
+    pickle_file_path:str = ""
     """数据集的 pickle 文件路径"""
     sample_columns: list[str] = field(default_factory=list)
     """样本列的名称列表"""
     label_columns: list[str] = field(default_factory=list)
     """标签列的名称列表"""
+    chunk_size: int = 0
+    """一条序列裁剪到的长度, 一条序列可能因此裁剪为若干条数据"""
+    chunk_num: int = 1
+    """一条序列裁剪到的个数.
+    仅当 chunk_mode 为 "random" 时有效.
+    """
+    chunk_mode: Literal["random", "sequential"] = "sequential"
 
 # TODO config:DataConfig 的子类, 用于 PandasDataset
 class PandasDataset(IDataset):

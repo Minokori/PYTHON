@@ -32,7 +32,8 @@ class DefaultAgentLoss(IAgentLoss):
                 label: Tensor | None = None,
                 target: Literal["ddpg_actor",
                                 "ddpg_critic",
-                                "behavior_clone"] | str = "ddpg_actor", **kwargs: Tensor) -> Tensor:
+                                "behavior_clone",
+                                "irl"] | str = "ddpg_actor", **kwargs: Tensor) -> Tensor:
         match target:
             case "ddpg_actor":
                 return self.ddpg_actor_loss(predicted)
@@ -48,6 +49,8 @@ class DefaultAgentLoss(IAgentLoss):
                 log_prob = kwargs["log_prob"]
                 log_alpha = kwargs["log_alpha"]
                 return self.sac_actor_loss(q, q_other, log_prob, log_alpha)
+            case "irl":
+                return self.irl_loss(predicted)
             case _:
                 raise ValueError(f"Unknown target for loss computation: {target}")
 
@@ -66,6 +69,10 @@ class DefaultAgentLoss(IAgentLoss):
         #     self.rse_state = RelativeSquaredError(C).cuda()
         # return self.rse_state(predicted_q, target_q)
         return mean(mse_loss(predicted_q, target_q))
+
+    def irl_loss(self, predicted_q:Tensor)->Tensor:
+        # TODO
+        return -mean(predicted_q)
 
     # TODO kwargs
     def sac_actor_loss(self, predicted_q: Tensor, predicted_q_other: Tensor, log_prob: Tensor, log_alpha: Tensor) -> Tensor:

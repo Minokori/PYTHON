@@ -48,13 +48,15 @@ class LengthWeightedRseLoss(ILoss):
         # 混合权重
         hybrid_weight = (1 - F) * normal_weight + F * unzero_weight
 
-        x = x * hybrid_weight
-        labels = labels * hybrid_weight
+        # BUG rse 计算得到nan
+        # x = x * hybrid_weight
+        # labels = labels * hybrid_weight
 
         losses: list[torch.Tensor] = []  # len = B
 
         for seq, label, l in zip(x, labels, length):
             rse = self.rse(seq[1:l], label[1:l])
+            # rse = nan
             losses.append(rse)
 
         l_weight = (torch.tensor(length) - 1).cuda()  # shape = (B,)

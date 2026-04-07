@@ -7,5 +7,12 @@
         "**/Thumbs.db": true,
         "**/*.meta": true,
         "**/__pycache__": true
-    }
+    },
+    "python-envs.pythonProjects": [
+        {
+            "path": ".",
+            "envManager": "ms-python.python:system",
+            "packageManager": "ms-python.python:pip"
+        }
+    ]
 }

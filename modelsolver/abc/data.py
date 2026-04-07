@@ -35,7 +35,7 @@ class IDataProcesser(ABC):
     """数据处理器接口"""
     @abstractmethod
     def collate_fn(self, batch: Sequence) -> tuple[list[Tensor], list[Tensor]]:
-        """传递给 DataLoader 的 collate_fn 函数"""
+        """传递给 DataLoader 的 `collate_fn` 方法"""
 
     @abstractmethod
     def preprocess(self, batch: Sequence, **kwargs) -> tuple[Tensor, ...]:
