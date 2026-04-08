@@ -462,24 +462,48 @@ class AgentModelSolver(ModelSolver):
         # 默认的 scheduler
         self.add_lr_scheduler(AgentNullScheduler)
 
-    def add_actor_component(self, actor: type[IActor]):
+    def add_actor_component(self, actor: type[IActor])->Self:
+        """注册 Actor.
+
+        Args:
+            actor (type[IActor]): IActor 的具体类
+        """
         self.add_model_component(IActor, actor)
         return self
 
-    def add_critic_component(self, critic: type[ICritic]):
+    def add_critic_component(self, critic: type[ICritic])->Self:
+        """注册 Critic
+
+        Args:
+            critic (type[ICritic]): ICritic 的具体类
+        """
         self.add_model_component(ICritic, critic)
         return self
 
-    def add_model(self, model: IAgentModel | type[IAgentModel]):
-        """添加智能体模型"""
+    def add_model(self, model: IAgentModel | type[IAgentModel])->Self:
+        """添加智能体模型
+
+        Args:
+            model (IAgentModel | type[IAgentModel]): IAgentModel 的类或者已有的实例
+        """
         return super().add_model(model)
 
     def add_environment_config(self, environment_config: Any) -> Self:
+        """注册环境配置
+
+        Args:
+            environment_config (dataclass): dataclass类的环境配置实例
+        """
         assert is_dataclass(environment_config), "config must be a dataclass"
         self._environment_builder.register(type(environment_config), instance=environment_config, lifespan=Lifespan.singleton)
         return self
 
     def add_environment(self, environment: IEnvironment | type[IEnvironment]) -> Self:
+        """注册 RL 环境
+
+        Args:
+            environment (IEnvironment | type[IEnvironment]): IEnviroment 的实现类或者实例
+        """
         match environment:
             case type():
                 self._environment_builder.register(IEnvironment, implementation_type=environment, lifespan=Lifespan.singleton)
@@ -488,6 +512,11 @@ class AgentModelSolver(ModelSolver):
         return self
 
     def add_replay_buffer(self, buffer: IReplayBuffer | type[IReplayBuffer]) -> Self:
+        """注册经验回放池
+
+        Args:
+            buffer (IReplayBuffer | type[IReplayBuffer]): IReplayBuffer 的类或者实例
+        """
         match buffer:
             case type():
                 self.register(IReplayBuffer, implementation_type=buffer, lifespan=Lifespan.singleton)
@@ -497,6 +526,7 @@ class AgentModelSolver(ModelSolver):
 
     @property
     def environment(self) -> IEnvironment:
+        """RL 环境"""
         if self.has_registration(IEnvironment):
             return self.resolve(IEnvironment)
         else:
@@ -506,10 +536,12 @@ class AgentModelSolver(ModelSolver):
 
     @property
     def model(self) -> IAgentModel:
+        """Agent 模型"""
         return super().model  # type: ignore
 
     @property
     def replay_buffer(self) -> IReplayBuffer:
+        """经验回放池"""
         return self.resolve(IReplayBuffer)
 
     @property
@@ -581,6 +613,12 @@ class AgentModelSolver(ModelSolver):
     # endregion
 
     def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac", "td3","irl"] = "behavior_cloning"):
+        """训练模型
+
+        Args:
+            print_interval (int, optional): 每训练多少epoch打印一次 log, 设置为0表示始终打印. Defaults to 0.
+            method (Literal[&quot;behavior_cloning&quot;, &quot;ddpg&quot;, &quot;sac&quot;, &quot;td3&quot;,&quot;irl&quot;], optional): 训练方式. Defaults to "behavior_cloning".
+        """
         self.model.train()
         # 清空 scheduler 计数器
         self.actor_scheduler.last_epoch = -1
@@ -600,6 +638,7 @@ class AgentModelSolver(ModelSolver):
                     self.train_single_step_through_irl()
                     if print_interval > 0 and epoch % print_interval == 0:
                         print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+                self.model.soft_update_target_net("critic", tau=1.0)
 
             case "ddpg" | "sac" | "td3" as offline_method:
                 for epoch in range(self.config.epoch):
@@ -615,6 +654,7 @@ class AgentModelSolver(ModelSolver):
                                   f"Critic Loss: {self.train_critic_losses[-1]:.4f}")
 
     def train_single_step_through_behavior_cloning(self):
+        """使用行为克隆进行单步训练"""
 
         loss_on_total_dataset = []
 
@@ -633,6 +673,7 @@ class AgentModelSolver(ModelSolver):
         self.train_losses.append(mean(loss_on_total_dataset).item())
 
     def train_through_ddpg(self, epoch: int):
+        """使用 DDPG 进行单步训练"""
         # 解压数据
         states, actions, rewards, next_states, dones = self.replay_buffer.sample()
 
@@ -669,7 +710,7 @@ class AgentModelSolver(ModelSolver):
         self.model.soft_update_target_net("actor", "critic")
 
     def train_through_sac(self, epoch: int):
-
+        """使用 SAC 进行单步训练"""
         # 解压数据
         states, actions, rewards, next_states, dones = self.replay_buffer.sample()
 
@@ -684,8 +725,8 @@ class AgentModelSolver(ModelSolver):
         q_other = self.model(states.cuda(), actions.cuda(), "q_other")
 
         # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
-        critic_loss = self.loss_function(q, q_target, "ddpg_critic")
-        critic_other_loss = self.loss_function(q_other, q_target, "ddpg_critic")
+        critic_loss = self.loss_function(q, q_target.detach(), "sac_critic")
+        critic_other_loss = self.loss_function(q_other, q_target.detach(), "sac_critic")
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
@@ -729,6 +770,7 @@ class AgentModelSolver(ModelSolver):
         self.model.soft_update_target_net("critic", "critic_other")
 
     def train_through_td3(self, epoch: int, delta: int):
+        """使用 TD3 进行单步训练"""
 
         # 解压数据
         states, actions, rewards, next_states, dones = self.replay_buffer.sample()
@@ -767,6 +809,15 @@ class AgentModelSolver(ModelSolver):
         print(f"Critic Loss 1: {q_loss.item():.4f}, Critic Loss 2: {q_other_loss.item():.4f}")
 
     def train_single_epoch_offline(self, epoch: int, method: str) -> bool:
+        """使用离线 RL 方法单步训练
+
+        Args:
+            epoch (int): epoch代数
+            method (str): 训练方法. 如 "ddpg", "sac", "td3" 等
+
+        Returns:
+            _description_ (bool): _description_
+        """
         # region 单步训练前准备
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
         total_r = reward  # 累计奖励和标志位
@@ -814,6 +865,9 @@ class AgentModelSolver(ModelSolver):
 
 
     def train_single_step_through_irl(self):
+        """使用 irl 进行单步训练.
+
+        目前的实现是基于行为克隆的, 直接将 IRL 的 loss 应用在 Q 网络上, 未来可以考虑更复杂的实现方式."""
         loss_on_total_dataset= []
         for batch in self.train_dataloader:
             states, actions = self.data_processer.preprocess(batch)
@@ -831,6 +885,7 @@ class AgentModelSolver(ModelSolver):
 
     @no_grad()
     def evalute_on_environment(self,):
+        """在环境上评估模型, 绘制模型在环境中的表现"""
         self.model.eval()
         ob, r, done, timeout, info = self.environment.reset()
         ob_list = []
@@ -840,6 +895,4 @@ class AgentModelSolver(ModelSolver):
             action = self.model(ob.cuda())
             ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
             ob_list.append(ob)
-        return ob_list
-        ob_list.append(ob)
         return ob_list

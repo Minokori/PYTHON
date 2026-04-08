@@ -239,8 +239,11 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         self.last_observation: ObservationDict = observation
         self.last_action = action
 
-        return self._convert_observation(next_observation).float(), tensor(
-            reward).float().reshape(1), tensor(terminated).float().reshape(1), truncated, info
+        return self._convert_observation(next_observation).float(),\
+                tensor(reward).float().reshape(1),\
+                tensor(terminated).float().reshape(1),\
+                truncated,\
+                info
 
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         observation, info = super(ParkingEnv, self).reset(seed=seed, options=options)
@@ -289,6 +292,9 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         # action_reward = - norm(action - last_action, ord=2)
         # 4 位移奖励
         # move_reward = norm(last_observation["achieved_goal"][0:2] - last_observation["desired_goal"][0:2]) - norm(observation["achieved_goal"][0:2] - observation["desired_goal"][0:2]) / 2 - 0.5
+        # 5 目标奖励
+        if self._is_success(observation['achieved_goal'], observation['desired_goal']):
+            computed_reward += 200
         return computed_reward + collison_reward # + action_reward * 0.1 + move_reward * 0.1
     # endregion
 
