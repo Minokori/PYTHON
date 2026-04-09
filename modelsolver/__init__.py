@@ -240,6 +240,8 @@ class ModelSolver(Container):
         return {
             "train_loss": [],
             "test_loss": [],
+            "":[],
+            
         }
 
     # region 训练方法
@@ -816,7 +818,7 @@ class AgentModelSolver(ModelSolver):
             method (str): 训练方法. 如 "ddpg", "sac", "td3" 等
 
         Returns:
-            _description_ (bool): _description_
+                单步训练是否完成 (bool): 返回False说明该次交互只收集了数据. 需要继续交互并训练模型, 直到返回True
         """
         # region 单步训练前准备
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
@@ -824,6 +826,8 @@ class AgentModelSolver(ModelSolver):
         delta = 0
         # endregion
 
+
+        # 主循环: 当没有完成且没有超时, 与环境交互并训练模型
         while not done and not timeout:
 
             # 与环境交互
@@ -846,6 +850,10 @@ class AgentModelSolver(ModelSolver):
                     case "td3":
                         self.train_through_td3(epoch, delta)
                         delta += 1
+
+        # 检查是否进行了训练
+        if not self.replay_buffer.can_sample:
+            return False
 
         # 更新学习率
         match method:

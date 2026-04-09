@@ -25,7 +25,7 @@ class IConfig:
 class HyperParameterConfig(IConfig):
     """超参数配置"""
     learning_rate: float = 1e-3
-    """学习率"""
+    """学习率, 也是 log_alpha 的学习率"""
     betas: tuple[float, float] = (0.9, 0.999)
     """Adam/AdamW 等优化器的 beta 参数"""
     weight_decay: float = 0.01
