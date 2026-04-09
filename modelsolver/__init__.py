@@ -241,7 +241,7 @@ class ModelSolver(Container):
             "train_loss": [],
             "test_loss": [],
             "":[],
-            
+
         }
 
     # region 训练方法
@@ -743,7 +743,6 @@ class AgentModelSolver(ModelSolver):
 
         # 计算当前的 Q 值
         predicted_actions, log_probs = self.model(states.cuda(), None, "action_with_log_prob")
-        entropy = -log_probs
 
         q = self.model(states.cuda(), predicted_actions, "q")
         q_other = self.model(states.cuda(), predicted_actions, "q_other")
@@ -755,10 +754,9 @@ class AgentModelSolver(ModelSolver):
         self.actor_optimizer.step()
         # endregion
 
-        # region 更新 alpha
-        alpha_loss = torch.mean(
-            (entropy - self.model.config.target_entropy).detach() *
-            self.model.log_alpha.exp())
+        # region 更新 alpha, SB3 称为"ent_coef"
+        alpha = self.model.log_alpha.exp().detach()
+        alpha_loss = -(self.model.log_alpha * (log_probs + self.model.config.target_entropy).detach()).mean()
         self.log_alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.log_alpha_optimizer.step()

@@ -76,8 +76,7 @@ class DefaultAgentLoss(IAgentLoss):
 
     # TODO kwargs
     def sac_actor_loss(self, predicted_q: Tensor, predicted_q_other: Tensor, log_prob: Tensor, log_alpha: Tensor) -> Tensor:
-        entropy = -log_prob
 
-        return mean(-log_alpha.exp() * entropy - torch.min(predicted_q, predicted_q_other))
+        return mean(log_alpha.exp() * log_prob - torch.min(predicted_q, predicted_q_other))
 
 # endregion

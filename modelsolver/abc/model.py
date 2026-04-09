@@ -327,11 +327,10 @@ class IAgentModel(IModel):
         """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作. 该方法适用于 SAC 算法"""
         assert actions is None, "SAC 计算 target Q 时, 不允许传入 actions, 必须使用 actor 计算动作"
         actions, log_probs = self.actor(states)
-        entropy = -log_probs
         target_q_1 = self.target_critic(states, actions)
         target_q_2 = self.other_target_critic(states, actions)
 
-        return torch.min(target_q_1, target_q_2) + self.log_alpha.exp() * entropy
+        return torch.min(target_q_1, target_q_2) - self.log_alpha.exp() * log_probs
 
     def _compute_q_with_target_net_by_td3(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
         """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作. 该方法适用于 SAC 算法"""
