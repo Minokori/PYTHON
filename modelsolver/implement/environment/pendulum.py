@@ -46,7 +46,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         ob, reward, terminated, truncated, info = super().step(2 * action.cpu().detach().numpy())
         ob[-1] /= 8.0  # 归一化角速度
 
-        state = from_numpy(ob).float().reshape(-1)
+        state = from_numpy(ob.copy()).float().reshape(-1)
 
         if self.history_buffer is not None:
             self.history_buffer.append(state)

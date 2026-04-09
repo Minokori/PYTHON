@@ -13,7 +13,7 @@ __all__ = ["RelativeSquaredErrorLoss"]
 
 
 class DefaultAgentLoss(IAgentLoss):
-
+    
     if TYPE_CHECKING:
         def __call__(self,
                      predicted: Tensor,

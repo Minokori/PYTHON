@@ -1,6 +1,8 @@
 """采用依赖注入 (DI) 的模型训练一键式解决方案"""
 
 # region 库导入
+from collections import deque
+import logging
 import os
 from dataclasses import is_dataclass
 from math import floor, log
@@ -19,7 +21,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, random_split
 
-from modelsolver.abc.config import DataConfig, HyperParameterConfig
+from modelsolver.abc.config import AgentConfig, DataConfig, HyperParameterConfig, ReplayBufferConfig
 from modelsolver.abc.data import (IDataLoader, IDataProcesser, IDataset,
                                   IReplayBuffer)
 from modelsolver.abc.environment import IEnvironment
@@ -240,11 +242,12 @@ class ModelSolver(Container):
         return {
             "train_loss": [],
             "test_loss": [],
-            "":[],
-
+            "rewards": [],
         }
-
     # region 训练方法
+
+
+
     def train_single_epoch(self, epoch: int):
         # set to training mode
         self.model.train()
@@ -490,6 +493,24 @@ class AgentModelSolver(ModelSolver):
         """
         return super().add_model(model)
 
+
+    def add_model_config(self, config: Any, name: str | None = None) -> Self:
+        """注册智能体配置
+
+        Args:
+            config (Any): AgentConfig或其子类的实例
+            name (str | None, optional): 标识配置的名称. Defaults to None.
+
+        Remarks:
+        如果要继承 AgentConfig, 注意使用 `@dataclass` 装饰器. 否则, 自定义字段不会生效:
+        >>> @dataclass
+            class MyAgentConfig:
+                new_field:int = 0
+        """
+        assert issubclass(type(config), AgentConfig),  "config 必须是 AgentConfig 的子类"
+        super().add_model_config(config, name)
+        return self
+
     def add_environment_config(self, environment_config: Any) -> Self:
         """注册环境配置
 
@@ -499,6 +520,7 @@ class AgentModelSolver(ModelSolver):
         assert is_dataclass(environment_config), "config must be a dataclass"
         self._environment_builder.register(type(environment_config), instance=environment_config, lifespan=Lifespan.singleton)
         return self
+
 
     def add_environment(self, environment: IEnvironment | type[IEnvironment]) -> Self:
         """注册 RL 环境
@@ -513,6 +535,15 @@ class AgentModelSolver(ModelSolver):
                 self._environment_builder.register(IEnvironment, instance=environment, lifespan=Lifespan.singleton)
         return self
 
+    def add_replay_buffer_config(self, config: ReplayBufferConfig)->Self:
+        """注册经验回放池配置
+
+        Args:
+            config (ReplayBufferConfig): 经验回放池配置实例
+        """
+        assert is_dataclass(config), "config must be a dataclass"
+        self.register(ReplayBufferConfig, instance=config, lifespan=Lifespan.singleton)
+        return self
     def add_replay_buffer(self, buffer: IReplayBuffer | type[IReplayBuffer]) -> Self:
         """注册经验回放池
 
@@ -545,6 +576,11 @@ class AgentModelSolver(ModelSolver):
     def replay_buffer(self) -> IReplayBuffer:
         """经验回放池"""
         return self.resolve(IReplayBuffer)
+
+    @property
+    def replay_buffer_config(self) -> ReplayBufferConfig:
+        """经验回放池配置"""
+        return self.resolve(ReplayBufferConfig)
 
     @property
     def actor_optimizer(self) -> Optimizer:
@@ -613,6 +649,25 @@ class AgentModelSolver(ModelSolver):
     def train_critic_losses(self) -> list[float]:
         return self.stats["critic_losses"]
     # endregion
+
+    @no_grad()
+    def replay_buffer_warming_up(self, step:int|None=None, method:Literal["random", "model_based"] = "random"):
+        """经验回放池预热, 在训练之前向经验回放池中添加一些初始经验."""
+        step = step or self.replay_buffer_config.minimal_capacity
+        ob, r, terminated, truncated, info = self.environment.reset()
+        shape = (self.model(ob.cuda(),None,"action")).cpu().detach()
+        for i in range(step):
+            if terminated or truncated:
+                ob, r, terminated, truncated, info = self.environment.reset()
+            match method:
+                case "random":
+                    action = torch.rand_like(shape)*2-1
+                case "model_based":
+                    action = (self.model(ob.cuda(),None,"action")).cpu().detach()
+            next_ob, r, terminated, truncated, info = self.environment.step(action)
+            self.replay_buffer.append(ob, action,r,next_ob, terminated)
+
+        return self
 
     def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac", "td3","irl"] = "behavior_cloning"):
         """训练模型
@@ -755,11 +810,11 @@ class AgentModelSolver(ModelSolver):
         # endregion
 
         # region 更新 alpha, SB3 称为"ent_coef"
-        alpha = self.model.log_alpha.exp().detach()
-        alpha_loss = -(self.model.log_alpha * (log_probs + self.model.config.target_entropy).detach()).mean()
-        self.log_alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        self.log_alpha_optimizer.step()
+        if self.model.config.alpha_learnable:
+            alpha_loss = -(self.model.log_alpha * (log_probs + self.model.config.target_entropy).detach()).mean()
+            self.log_alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.log_alpha_optimizer.step()
         # endregion
 
         # 记录损失和累计奖励
@@ -822,20 +877,25 @@ class AgentModelSolver(ModelSolver):
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
         total_r = reward  # 累计奖励和标志位
         delta = 0
+        recent_rewards = deque(maxlen=100)
+
         # endregion
 
 
         # 主循环: 当没有完成且没有超时, 与环境交互并训练模型
         while not done and not timeout:
 
-            # 与环境交互
+            # 与环境交互1步
             with no_grad():
                 action = self.model(state.cuda(), None, "action")
                 next_state, reward, done, timeout, info = self.environment.step(action.cpu())
                 self.replay_buffer.append(state, action, reward, next_state, done)
                 state = next_state
                 total_r += reward
-
+                recent_rewards.append(reward.item())
+                # TODO  设置为可配置的打印
+                if len(recent_rewards) > 70:
+                    print(f"Epoch: {epoch + 1}, Step: {delta + 1}, Reward: {reward.item():.4f}, Total Reward: {total_r.item():.4f}, Recent Average Reward: {mean(recent_rewards):.4f}", end="\r")
             # 训练
             if not self.replay_buffer.can_sample:
                 pass
@@ -867,6 +927,8 @@ class AgentModelSolver(ModelSolver):
                 self.actor_scheduler.step()
                 self.critic_scheduler.step()
                 self.critic_other_scheduler.step()
+
+        self.stats["rewards"].append(total_r.item())
         return True
 
 

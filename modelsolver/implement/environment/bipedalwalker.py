@@ -28,7 +28,7 @@ class BipedalWalkerEnvironment(IEnvironment):
     """漫步环境"""
 
     def __init__(self) -> None:
-        self._env = BipedalWalker(render_mode="human", hardcore=True)
+        self._env = BipedalWalker(render_mode="human")
 
     def reset(self) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         ob, info = self._env.reset()

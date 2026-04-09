@@ -223,19 +223,25 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         action, observation = action, self.observation_type.observe()
 
         a = action.cpu().detach().numpy()
+
+        next_observation, reward, terminated, truncated, info = super(ParkingEnv, self).step(a)
+
+        # region highway-env 的 step 函数实现逻辑
         # 执行动作
-        self.time += 1 / self.config["policy_frequency"]
-        self._simulate(a)
+        # self.time += 1 / self.config["policy_frequency"]
+        # self._simulate(a)
 
-        # 计算奖励等
-        next_observation: ObservationDict = self.observation_type.observe()
-        reward = self._reward(a, last_action.numpy(), observation, last_observation)
-        terminated = self._is_terminated()
-        truncated = self._is_truncated()
-        info = self._info(next_observation, a)
+        # # 计算奖励等
+        # next_observation: ObservationDict = self.observation_type.observe()
+        # reward = self._reward(a)
+        # terminated = self._is_terminated()
+        # truncated = self._is_truncated()
+        # info = self._info(next_observation, a)
 
-        if self.render_mode == "human":
-            self.render()
+
+        # if self.render_mode == "human":
+        #     self.render()
+        # endregion
 
         # 更新 last_observation 和 last_action
         self.last_observation: ObservationDict = observation
@@ -254,57 +260,72 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         return self._convert_observation_to_tensor(observation).float(), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
     # endregion
 
-    # region override private method
-
-
+    # region override private method (step内部的私有方法, 包括奖励计算, 终止状态检测)
     def _is_success(self, achieved_goal: NDArray[float32], desired_goal: NDArray[float32]) -> bool:
+        """判断是否成功达到目标
 
-        # 真实世界尺度下的误差
-        error = (achieved_goal - desired_goal) * self.config["observation"]["scales"]  # scales定义的全是1
+        ---
+        highway-env 默认的 success 判定函数是基于 acheived_goal 和 desired_goal 之间的欧氏距离是否小于某个阈值判断的.
+        """
+        # 真实世界尺度下的误差,scales定义的全是1, 所以是真实的尺度
+        error = (achieved_goal - desired_goal) * self.config["observation"]["scales"]
 
-        # 1 位置误差小于 0.25m2
+        x_error, y_error, vx_error, vy_error, cosh_error, sinh_error = error.copy()
+
+        # 1 位置误差, 单位 m.
         position_error = norm(error[:2], ord=2)
 
-        # 2 速度误差小于 0.05m/s
+        # 2 速度误差, 单位 m/s
         speed_error = norm(error[2:4], ord=2)
 
-        # 3 角度误差小于 5度
+        # 3 角度误差, 单位 degree
         heading = self.vehicle.heading
         goal_heading = self.vehicle.goal.heading  # type: ignore
-
         heading_error = abs(rad2deg(heading - goal_heading))
 
         return bool((position_error < 0.5) and (heading_error < 5) and (speed_error < 0.05))  #
 
-    def _reward(
-            self,
-            action: NDArray[float32],
-            last_action: NDArray[float32],
-            observation: ObservationDict,
-            last_observation: ObservationDict) -> float:
-        # 1, 2 都是highway-env默认的奖励函数
-        # 1 累计奖励，根据当前的状态（x,y,vx,vy,cosh,sinh）和期望的状态计算的累计奖励 [-1,0]
+    def _reward(self,action: NDArray[float32],) -> float:
+
+        """计算奖励. 仅在 step 方法中被调用.
+
+        highway-env 的默认实现包括两部分:
+        + 基于当前状态和期望状态的欧氏距离计算的奖励. 由 `compute_reward` 方法计算.
+        + 碰撞惩罚. 如果发生碰撞, 则根据 `collision_reward` 配置项给予惩罚.
+
+        *highway-env 的默认实现函数签名仅接受`action`入参*
+        """
+        # 0 获取必须的状态信息
+        observation = self.observation_type_parking.observe()
+        last_action = self.last_action
+        last_observation = self.last_observation
+
+        # 1 欧氏距离奖励，根据当前的状态（x,y,vx,vy,cosh,sinh）和期望的状态计算的累计奖励 [-1,0]
         computed_reward = self.compute_reward(observation['achieved_goal'], observation['desired_goal'], {})
+
         # 2 碰撞惩罚 [-5 | 0]
-        collison_reward = self.config['collision_reward'] * sum(v.crashed for v in self.controlled_vehicles)
+        if self.vehicle.crashed:
+            collison_reward = self.config['collision_reward']
+        else:
+            collison_reward = 0
+
+
         # 3 动作惩罚 (动作变化小有奖励，动作变化大惩罚) [-1,0]
         # action_reward = - norm(action - last_action, ord=2)
+
         # 4 位移奖励 (相较于上一时间点, 离目标越近, 奖励越大)
         # last_diff = norm(last_observation["achieved_goal"][0:2] - last_observation["desired_goal"][0:2],ord=2)
         # now_diff = norm(observation["achieved_goal"][0:2] - observation["desired_goal"][0:2])
         # delta = now_diff - last_diff  # 越小越好
         # move_reward = -delta # 若delta>0, 说明变远了, 给惩罚
+
         # 5 目标奖励
         if self._is_success(observation['achieved_goal'], observation['desired_goal']):
             logging.debug("成功达到目标!")
-            computed_reward += 200
-        # self.logginng_reward(action, observation, {
-        #     "highway_env_reward": computed_reward,
-        #     "collision_reward": collison_reward,
-        #     "action_reward": action_reward,
-        #     "move_reward": move_reward
-        # }) # type: ignore
-        return computed_reward + collison_reward # + action_reward # + move_reward
+            target_reward = 200
+        else:
+            target_reward = 0
+        return computed_reward + collison_reward  + target_reward # + action_reward # + move_reward
     # endregion
 
 
@@ -388,7 +409,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
 
         # assert ob == achieved_goal
         desired_goal = observation["desired_goal"]
-        return concatenate([from_numpy(ob), from_numpy(desired_goal)], dim=0)
+        return concatenate([from_numpy(ob.copy()), from_numpy(desired_goal.copy())], dim=0)
 
 
 class DefaultParkingEnv(IEnvironment):
@@ -405,6 +426,9 @@ class DefaultParkingEnv(IEnvironment):
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
         ob, r, done, timeout, info = self.highway_parking.step(action.cpu().detach().numpy())
 
+        if done:
+            r = r + 200.0 # type: ignore
+
         return self._convert_observation(ob), tensor(r).reshape(1), tensor(done, dtype=torch.float32), timeout, info
 
     def _convert_observation(self, observation: ObservationDict) -> Tensor:
@@ -414,7 +438,7 @@ class DefaultParkingEnv(IEnvironment):
 
         # assert ob == achieved_goal
         desired_goal = observation["desired_goal"]
-        return concatenate([from_numpy(ob), from_numpy(desired_goal)], dim=0)
+        return concatenate([from_numpy(ob.copy()), from_numpy(desired_goal.copy())], dim=0)
 
     def build_environment(self, **kwargs) -> Self:
         return self

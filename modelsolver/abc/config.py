@@ -2,7 +2,7 @@
 # region imports
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from dataclasses_json import dataclass_json
 from numpy import exp2, floor, log2
@@ -107,5 +107,9 @@ class AgentConfig:
     hidden_channels: int
     target_entropy: float
     """目标熵. 一般设置为 `-action_channels`"""
+    alpha_learnable:bool = True
+    """是否学习温度参数 alpha"""
+    alpha:float = 0.01
+    """温度参数 alpha 的初始值"""
 
 # endregion

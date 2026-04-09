@@ -40,11 +40,18 @@ class DefaultAgent(IAgentModel):
             other_target_critic: ICritic,
             config: AgentConfig):
         super().__init__(actor, critic, target_actor, target_critic, other_critic, other_target_critic, config)
+        self.__name_for_save = "DefaultAgent"
 
     @property
     def config(self) -> AgentConfig:
         return self._config  # type: ignore
 
+
+
     @property
     def name_for_save(self) -> str:
-        return "DefaultAgent"
+        return self.__name_for_save
+
+    @name_for_save.setter
+    def name_for_save(self, name: str):
+        self.__name_for_save = name

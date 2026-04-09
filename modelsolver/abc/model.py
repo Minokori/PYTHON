@@ -9,6 +9,7 @@ from torch import Tensor, no_grad
 from torch.distributions import Normal
 from torch.nn import Module
 
+from .config import AgentConfig
 
 class IModule(ABC, Module):
     """模块接口, 定义了模型的基本结构和方法, 包括前向传播和反向传播等"""
@@ -173,7 +174,7 @@ class IAgentModel(IModel):
     """智能体模型接口.
 
     + 以 Actor-Critic 架构为基础的智能体模型
-    + 已经实现的算法: DDPG, BC, SAC
+    + 已经实现的算法: DDPG, BC, SAC, TD3
     +
     """
 
@@ -186,7 +187,8 @@ class IAgentModel(IModel):
                                      "action_with_log_prob",
                                      "q", "q_other",
                                      "target_q",
-                                     "target_q_sac", "target_q_td3"] = "action", ** kwargs) -> Tensor:
+                                     "target_q_sac",
+                                     "target_q_td3"] = "action", ** kwargs) -> Tensor:
             """
             + 输入 s, 返回 a (策略计算)
             + 输入 (s,a), 返回 q (值计算)
@@ -213,23 +215,27 @@ class IAgentModel(IModel):
                  config: Any,
 
                  ):
-        assert is_dataclass(config), "config 必须是 dataclass 类型"
+        assert issubclass(type(config), AgentConfig), "AgentModel 的 config 必须是 AgentConfig 的子类"
         super().__init__()
         self._config = config
         self.actor = actor
-        """策略网络"""
+        """策略网络, 用于计算动作 a"""
         self.critic = critic
-        """值网络"""
+        """值网络, 用于计算动作的价值 Q(s,a)"""
         self.target_actor = target_actor
+        """目标策略网络"""
         self.target_critic = target_critic
+        """目标值网络"""
         self.other_critic = other_critic
+        """第二个值网络, 用于 SAC, TD3 等需要多个 critic 的算法"""
         self.other_target_critic = other_target_critic
+        """第二个目标值网络, 用于 TD3 等需要多个 target_critic 的算法"""
 
         # 复制参数
         self.init_target_nets()
 
         # SAC 需要的 参数
-        self.log_alpha = torch.tensor(log(0.01), requires_grad=True, dtype=torch.float32)
+        self.log_alpha = torch.tensor(log(config.alpha), requires_grad=True, dtype=torch.float32)
 
     @property
     def config(self) -> Any:
