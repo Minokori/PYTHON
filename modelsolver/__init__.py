@@ -895,7 +895,7 @@ class AgentModelSolver(ModelSolver):
                 recent_rewards.append(reward.item())
                 # TODO  设置为可配置的打印
                 if len(recent_rewards) > 70:
-                    print(f"Epoch: {epoch + 1}, Step: {delta + 1}, Reward: {reward.item():.4f}, Total Reward: {total_r.item():.4f}, Recent Average Reward: {mean(recent_rewards):.4f}", end="\r")
+                    print(f"Epoch: {epoch + 1}, Reward: {reward.item():.4f}, Total Reward: {total_r.item():.4f}, Recent Average Reward: {mean(recent_rewards):.4f}", end="\r")
             # 训练
             if not self.replay_buffer.can_sample:
                 pass

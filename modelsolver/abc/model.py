@@ -238,7 +238,7 @@ class IAgentModel(IModel):
         self.log_alpha = torch.tensor(log(config.alpha), requires_grad=True, dtype=torch.float32)
 
     @property
-    def config(self) -> Any:
+    def config(self) -> AgentConfig:
         return self._config
 
     def init_target_nets(self):
