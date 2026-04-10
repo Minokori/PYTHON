@@ -417,7 +417,7 @@ class DefaultParkingEnv(IEnvironment):
     _ZERO_ACTION = torch.zeros(2)
 
     def __init__(self) -> None:
-        self.highway_parking = gymnasium.make("parking-v0")
+        self.highway_parking = gymnasium.make("parking-v0", render_mode="human")
 
     def reset(self):
         self.highway_parking.reset()
@@ -429,7 +429,7 @@ class DefaultParkingEnv(IEnvironment):
         if done:
             r = r + 200.0 # type: ignore
 
-        return self._convert_observation(ob), tensor(r).reshape(1), tensor(done, dtype=torch.float32), timeout, info
+        return self._convert_observation(ob), tensor(r).float().reshape(1), tensor(done).float(), timeout, info
 
     def _convert_observation(self, observation: ObservationDict) -> Tensor:
         """将 highway-env 返回的字典格式观测转为 Tenor"""
@@ -438,7 +438,7 @@ class DefaultParkingEnv(IEnvironment):
 
         # assert ob == achieved_goal
         desired_goal = observation["desired_goal"]
-        return concatenate([from_numpy(ob.copy()), from_numpy(desired_goal.copy())], dim=0)
+        return concatenate([from_numpy(ob.copy()).float(), from_numpy(desired_goal.copy()).float()], dim=0)
 
     def build_environment(self, **kwargs) -> Self:
         return self

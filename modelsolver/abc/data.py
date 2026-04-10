@@ -66,9 +66,11 @@ class IReplayBuffer(IDataset, ABC):
 
     *IReplayBuffer 已经有简单的实现, 可以不用重载*
     """
-
+    @property
+    def config(self) -> ReplayBufferConfig:
+        return self._config # type: ignore
     def __init__(self, config: ReplayBufferConfig):
-        self.config = config
+        self._config = config
         self._create_buffer()
 
     def __add__(self, other: Self) -> Self:
@@ -96,7 +98,7 @@ class IReplayBuffer(IDataset, ABC):
     @property
     def can_sample(self) -> bool:
         """是否可以从池中采样"""
-        return len(self._state_buffer) >= self.config.minimal_capacity
+        return len(self._state_buffer) >= self._config.minimal_capacity
     # endregion
 
     def append(
@@ -130,9 +132,9 @@ class IReplayBuffer(IDataset, ABC):
         Returns:
             批量马尔可夫链 (tuple[Tensor, Tensor, Tensor, Tensor, Tensor]): 状态、动作、奖励、下一个状态、终止标志 , shape = (batch, channel)
         """
-        if len(self._state_buffer) < self.config.batch_size:
+        if len(self._state_buffer) < self._config.batch_size:
             raise ValueError("Not enough samples in replay buffer")
-        indices = randint(0, len(self._state_buffer), (self.config.batch_size,))
+        indices = randint(0, len(self._state_buffer), (self._config.batch_size,))
         states = []
         actions = []
         rewards = []
@@ -149,15 +151,15 @@ class IReplayBuffer(IDataset, ABC):
 
     def _create_buffer(self):
         """创建经验回放池的缓冲区"""
-        self._state_buffer: deque[Tensor] = deque(maxlen=self.config.capacity)
+        self._state_buffer: deque[Tensor] = deque(maxlen=self._config.capacity)
         """状态 s 的缓冲区"""
-        self._action_buffer: deque[Tensor] = deque(maxlen=self.config.capacity)
+        self._action_buffer: deque[Tensor] = deque(maxlen=self._config.capacity)
         """动作 a 的缓冲区"""
-        self._reward_buffer: deque[Tensor] = deque(maxlen=self.config.capacity)
+        self._reward_buffer: deque[Tensor] = deque(maxlen=self._config.capacity)
         """奖励 r 的缓冲区"""
-        self._next_state_buffer: deque[Tensor] = deque(maxlen=self.config.capacity)
+        self._next_state_buffer: deque[Tensor] = deque(maxlen=self._config.capacity)
         """下一个状态 s' 的缓冲区"""
-        self._done_buffer: deque[Tensor] = deque(maxlen=self.config.capacity)
+        self._done_buffer: deque[Tensor] = deque(maxlen=self._config.capacity)
         """终止标志 done 的缓冲区"""
 
 # endregion

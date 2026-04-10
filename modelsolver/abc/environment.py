@@ -5,6 +5,10 @@ from typing import Self
 from torch import Tensor
 
 
+# TODO step 返回的state包含goal, 方便HER算法的实现
+# TODO 抽象出一个IReward接口.
+
+
 class IEnvironment(ABC):
     """包装环境的接口.
 
@@ -30,4 +34,5 @@ class IEnvironment(ABC):
     @abstractmethod
     def build_environment(self, **kwargs) -> Self:
         """调用一次以确保环境被构建"""
+        ...
         ...
