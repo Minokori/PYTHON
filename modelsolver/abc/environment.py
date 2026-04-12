@@ -1,8 +1,11 @@
 """环境模块, 定义了环境接口, 包括强化学习环境接口"""
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Self
 
 from torch import Tensor
+
+from modelsolver.abc.config import EnvironmentConfig
 
 
 # TODO step 返回的state包含goal, 方便HER算法的实现
@@ -36,3 +39,15 @@ class IEnvironment(ABC):
         """调用一次以确保环境被构建"""
         ...
         ...
+
+    @property
+    def ZERO_ACTION(self) -> Tensor:
+        """环境的零动作, 用于经验回放池预热等场景. 预期得到 Tensor.cpu()"""
+        ...
+
+    @property
+    def GOAL(self) -> Tensor:
+        """环境的目标状态, 用于HER等算法. 预期得到 Tensor.cpu()"""
+        ...
+
+

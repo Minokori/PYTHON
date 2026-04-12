@@ -4,7 +4,7 @@ from typing import Self
 
 import numpy as np
 from gymnasium.envs.classic_control import Continuous_MountainCarEnv
-from torch import Tensor, concat, from_numpy, tensor
+from torch import Tensor, concat, from_numpy, tanh, tensor
 
 from modelsolver.abc.environment import IEnvironment
 
@@ -18,6 +18,12 @@ np.set_printoptions(precision=2, suppress=True)
 
 class MountainCarEnvironment(Continuous_MountainCarEnv,IEnvironment):
     """山地车环境"""
+    @property
+    def ZERO_ACTION(self) -> Tensor:
+        return tensor([0.0])
+    @property
+    def GOAL(self) -> Tensor:
+        return tensor([(0.45+0.3)/0.9, 0.0, 0.57])  # 位置(归一到[-1,1]), 速度, 高度
 
     def __init__(self) -> None:
         super().__init__(render_mode="human")
@@ -36,8 +42,8 @@ class MountainCarEnvironment(Continuous_MountainCarEnv,IEnvironment):
         state[1] = (state[1] / 0.07) # 速度归一化到 [-1, 1]
 
         # 奖励函数：越接近目标位置奖励越高, 速度越大奖励越高
-        reward = height*2 + abs(state[1])
-        return concat([state,height]), reward, tensor(0).float().reshape(1), False, info
+        reward = tanh(height*2 + abs(state[1]))
+        return concat([state,height, self.GOAL]), reward, tensor(0).float().reshape(1), False, info
 
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
@@ -74,10 +80,10 @@ class MountainCarEnvironment(Continuous_MountainCarEnv,IEnvironment):
 
 
 
-        reward = (height_reward + position_reward) * goal_weight+\
-                 (acc_reward + speed_reward)*dynamic_weight +\
-                  success_reward
-        return concat([state,height]), reward, tensor(terminated).float().reshape(1), truncated, info
+        reward = tanh((height_reward + position_reward) * goal_weight+\
+                 (acc_reward + speed_reward)*dynamic_weight)
+        reward +=success_reward
+        return concat([state,height, self.GOAL]), reward, tensor(terminated).float().reshape(1), truncated, info
 
     def build_environment(self) -> Self:
         return self

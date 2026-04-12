@@ -88,9 +88,8 @@ class ReplayBufferConfig:
 
 @dataclass_json
 @dataclass
-class AgentHyperParameterConfig():
+class AgentHyperParameterConfig(HyperParameterConfig):
     """超参数配置"""
-    simple: HyperParameterConfig = field(default_factory=lambda: HyperParameterConfig())
     gamma_rl: float = 0.98
     """RL 的 奖励衰减系数"""
     actor_lr: float = 3e-4
@@ -111,5 +110,16 @@ class AgentConfig:
     """是否学习温度参数 alpha"""
     alpha:float = 0.01
     """温度参数 alpha 的初始值"""
+
+
+@dataclass_json
+@dataclass
+class EnvironmentConfig(IConfig):
+    """环境配置"""
+
+    terminated_delta: int = -1
+    """是否启用终止状态检测.设置为 >0 的值时, 当连续若干时间步达到数值状态时, 环境将进入终止状态."""
+    truncated_time: int = -1
+    """时间步截断. 设置为 <0 则不启用截断."""
 
 # endregion

@@ -127,6 +127,8 @@ class SimpleHEReplay(IReplayBuffer):
             done (Tensor): 是否终止
         """
 
+        assert state.is_cpu and action.is_cpu and reward.is_cpu and next_state.is_cpu and done.is_cpu, "输入的 Tensor 必须在 CPU 上"
+
 
 
         if new:

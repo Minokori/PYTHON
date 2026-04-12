@@ -107,7 +107,8 @@ class IReplayBuffer(IDataset, ABC):
             action: Tensor,
             reward: Tensor,
             next_state: Tensor,
-            done: Tensor) -> None:
+            done: Tensor,
+            new: bool = False) -> None:
         """向池中添加一条序列 `(s,a,r,s')` , 每个元素 shape = (1, dim)
 
         Args:
@@ -116,6 +117,7 @@ class IReplayBuffer(IDataset, ABC):
             reward (Tensor): 在状态 s 下, 执行动作 a 后, 环境返回的奖励 r
             next_state (Tensor): 在状态 s 下, 执行动作 a 后, 环境返回的下一个状态 s'
             done (Tensor): 是否终止
+            new (bool): 是否为新轨迹的开始. 默认为 False, 即默认添加到当前轨迹中. 设置为 True 时, 将在池中添加一条新轨迹.
         """
         self._state_buffer.append(state.cpu().detach().float().reshape(-1))
         self._action_buffer.append(action.cpu().detach().float().reshape(-1))

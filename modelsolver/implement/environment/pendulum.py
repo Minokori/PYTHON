@@ -79,3 +79,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
 
     def build_environment(self) -> Self:
         return self
+
+    @property
+    def ZERO_ACTION(self) -> Tensor:
+        return tensor([0.0]).float().cpu()

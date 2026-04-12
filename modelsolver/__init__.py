@@ -652,13 +652,20 @@ class AgentModelSolver(ModelSolver):
 
     @no_grad()
     def replay_buffer_warming_up(self, step:int|None=None, method:Literal["random", "model_based"] = "random"):
-        """经验回放池预热, 在训练之前向经验回放池中添加一些初始经验."""
+        """经验回放池预热, 在训练之前向经验回放池中添加一些初始经验.
+
+        Args:
+            step (int | None, optional): 预训练多少条轨迹. Defaults to None.
+            method (Literal[&quot;random&quot;, &quot;model_based&quot;], optional): 预训练方法. 对动作随机采样或使用模型初始参数进行采样. Defaults to "random".
+        """
         step = step or self.replay_buffer_config.minimal_capacity
+        shape = torch.zeros(self.replay_buffer.config.action_dim).reshape(1)
         ob, r, terminated, truncated, info = self.environment.reset()
-        shape = (self.model(ob.cuda(),None,"action")).cpu().detach()
-        for i in range(step):
+        self.replay_buffer.append(ob,self.environment.ZERO_ACTION,r,ob, terminated, new=True)
+        for _ in range(step):
             if terminated or truncated:
                 ob, r, terminated, truncated, info = self.environment.reset()
+                self.replay_buffer.append(ob,self.environment.ZERO_ACTION,r,ob, terminated, new=True)
             match method:
                 case "random":
                     action = torch.rand_like(shape)*2-1
@@ -666,6 +673,7 @@ class AgentModelSolver(ModelSolver):
                     action = (self.model(ob.cuda(),None,"action")).cpu().detach()
             next_ob, r, terminated, truncated, info = self.environment.step(action)
             self.replay_buffer.append(ob, action,r,next_ob, terminated)
+            ob = next_ob
 
         return self
 
@@ -875,6 +883,7 @@ class AgentModelSolver(ModelSolver):
         """
         # region 单步训练前准备
         state, reward, done, timeout, info = self.environment.reset()  # 重置环境
+        self.replay_buffer.append(state, self.environment.ZERO_ACTION, reward, state, done, new=True)
         total_r = reward  # 累计奖励和标志位
         delta = 0
         recent_rewards = deque(maxlen=100)
@@ -889,7 +898,7 @@ class AgentModelSolver(ModelSolver):
             with no_grad():
                 action = self.model(state.cuda(), None, "action")
                 next_state, reward, done, timeout, info = self.environment.step(action.cpu())
-                self.replay_buffer.append(state, action, reward, next_state, done)
+                self.replay_buffer.append(state, action.cpu().detach(), reward, next_state, done)
                 state = next_state
                 total_r += reward
                 recent_rewards.append(reward.item())
