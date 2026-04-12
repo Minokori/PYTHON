@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from gymnasium.envs.classic_control import PendulumEnv
 from torch import Tensor, from_numpy, tensor
-
+from modelsolver.abc.config import EnvironmentConfig
 from modelsolver.abc.environment import IEnvironment
 
 
@@ -28,7 +28,7 @@ class PendulumConfig:
 class PendulumEnvironment(PendulumEnv, IEnvironment):
     """摆锤环境"""
 
-    def __init__(self, config: PendulumConfig = PendulumConfig()) -> None:
+    def __init__(self, config: EnvironmentConfig) -> None:
         super().__init__(render_mode="human")
         self.history_buffer = deque(maxlen=config.terminated_delta) if config.terminated_delta > 0 else None
         """历史状态缓冲区. 不启用终止状态时, 为 None"""
@@ -47,7 +47,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         ob[-1] /= 8.0  # 归一化角速度
 
         state = from_numpy(ob.copy()).float().reshape(-1)
-
+        # state[-1]/= 8.0  # 归一化角速度
         if self.history_buffer is not None:
             self.history_buffer.append(state)
         if self.time is not None:
@@ -83,3 +83,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
     @property
     def ZERO_ACTION(self) -> Tensor:
         return tensor([0.0]).float().cpu()
+
+    @property
+    def GOAL(self) -> Tensor:
+        return tensor([1.0, 0.0, 0.0]).float().cpu()
