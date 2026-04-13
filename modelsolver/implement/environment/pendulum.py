@@ -4,13 +4,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Self
 
-from modelsolver.abc.reward import IReward
 import numpy as np
 import torch
 from gymnasium.envs.classic_control import PendulumEnv
-from torch import Tensor, from_numpy, tensor, concat
+from torch import Tensor, concat, from_numpy, tensor
+
 from modelsolver.abc.config import EnvironmentConfig
 from modelsolver.abc.environment import IEnvironment
+from modelsolver.abc.reward import IReward
 
 
 logging.basicConfig(level=logging.DEBUG, filename="plog.log", filemode="w",encoding="utf-8")
@@ -41,14 +42,14 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
     def reset(self) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         self.time = 0 if self.time is not None else None
         ob, info = super().reset()
-        return concat([from_numpy(ob).float().reshape(-1), self.GOAL]), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
+        state= from_numpy(ob.copy()).float().reshape(-1)
+        state[-1]/= 8.0  # 归一化角速度
+        return concat([state, self.GOAL]), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         ob, reward, terminated, truncated, info = super().step(2 * action.cpu().detach().numpy())
-        ob[-1] /= 8.0  # 归一化角速度
-
         state = from_numpy(ob.copy()).float().reshape(-1)
-        # state[-1]/= 8.0  # 归一化角速度
+        state[-1]/= 8.0  # 归一化角速度
         if self.history_buffer is not None:
             self.history_buffer.append(state)
         if self.time is not None:
