@@ -99,13 +99,12 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
 
 class PendulumReward(IReward):
 
-
-    # r = -(theta<sup>2</sup> + 0.1 * theta_dt<sup>2</sup> + 0.001 * torque<sup>2</sup>), [-16.2736044, 0]
     def forward(self, **kwargs) -> tuple[Tensor, Tensor]:
         # state&goal: (cos, sin, v_theta)
+        state = kwargs["state"]  # shape = (B, state_dim)
+        action = kwargs["action"]  # shape = (B, action_dim)
         next_state = kwargs["next_state"]  # shape = (B, state_dim)
-        goal = kwargs["goal"]  # shape = (B, state_dim)
-        reward = -torch.sum(torch.abs(next_state - goal), dim=-1).reshape(-1, 1)
+        reward = -torch.sum(torch.abs(next_state[:,:3] - next_state[:,3:]), dim=-1).reshape(-1, 1)
         done = (reward > -0.1).float().reshape(-1, 1)
         return reward, done
 

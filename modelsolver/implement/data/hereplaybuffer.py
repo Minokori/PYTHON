@@ -1,5 +1,5 @@
 import torch
-from torch import Tensor
+from torch import Tensor, no_grad
 
 from modelsolver.abc.config import ReplayBufferConfig
 from modelsolver.abc.data import IReplayBuffer
@@ -68,8 +68,7 @@ class SimpleHEReplay(IReplayBuffer):
 
 
     def start_a_new_trajectory(self):
-        """开启一条新的轨迹记录.
-        """
+        """开启一条新的轨迹记录."""
         self._current_ep_id = self._episode_counter
         self._episode_counter += 1
         self._current_ep_start_pos = self._pos
@@ -154,6 +153,7 @@ class SimpleHEReplay(IReplayBuffer):
     def can_sample(self) -> bool:
         return self._size > self._config.minimal_capacity
 
+    @no_grad
     def sample(self, her: bool = True) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         batch_size = int(self.config.batch_size)
         g_index = self.config.state_dim // 2
@@ -180,8 +180,8 @@ class SimpleHEReplay(IReplayBuffer):
         # HER 逻辑
 
         # her_idx: 需要进行 HER 重标注的样本在当前 batch 中的索引, shape = (her_size,)
-        her_mask = torch.rand(batch_size) < self.config.her_p
-        her_idx = torch.nonzero(her_mask, as_tuple=False).flatten()
+        # her_mask = torch.rand(batch_size) < self.config.her_p
+        her_idx = torch.nonzero(torch.rand(batch_size) < self.config.her_p, as_tuple=False).flatten()
         if her_idx.numel() == 0:
             if dones_t.ndim == 1:
                 dones_t = dones_t.unsqueeze(-1)
@@ -216,7 +216,12 @@ class SimpleHEReplay(IReplayBuffer):
 
         # 计算重标注后的奖励和done.
         # 输入：next_state_的state_part 与 goal_part（都为 batch）
-        rew_new, done_new = self._her_reward_fn(next_state = next_states_t[her_idx, g_index:],goal= sampled_goal)
+        rew_new, done_new = self._her_reward_fn(
+            state=states_t[her_idx],  # shape = (her_size, state_dim)
+            action= actions_t[her_idx], # shape = (her_size, action_dim)
+            next_state = next_states_t[her_idx], # shape = (her_size, state_dim/2)
+            # goal= sampled_goal# shape = (her_size, state_dim/2)
+             )
 
         rew_new = rew_new.to(dtype=rewards_t.dtype, device=rewards_t.device)
         done_new = done_new.to(dtype=dones_t.dtype, device=dones_t.device)
