@@ -45,7 +45,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         state= from_numpy(ob.copy()).float().reshape(-1)
         state[-1]/= 8.0  # 归一化角速度
         reward, done = self.compute_reward_by_goal(state)
-        return concat([state, self.GOAL]), tensor(reward).float().reshape(1), tensor(0).float().reshape(1), False, info
+        return concat([state, self.GOAL]), reward, tensor(0).float().reshape(1), False, info
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         ob, reward, terminated, truncated, info = super().step(2 * action.cpu().detach().numpy())
@@ -60,11 +60,11 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         text = "↻" if action[0]>0 else "↺"
         logging.debug(f"动作:{text}{abs(action[0]):.2f}, 角度:{angle:.2f}, 角速度:{ob[-1]:.2f}  奖励:{reward:.2f}")
         reward,done = self.compute_reward_by_goal(state)
-        return concat([state,self.GOAL]), tensor(reward).float().reshape(1), self.is_terminated(), self.is_truncated(), info
+        return concat([state,self.GOAL]), reward, self.is_terminated(), self.is_truncated(), info
 
     def compute_reward_by_goal(self, state:Tensor) -> tuple[Tensor, Tensor]:
-        reward = -torch.sum(torch.abs(state[:3] - self.GOAL), dim=-1)
-        done = (reward > -0.1).float()
+        reward = -torch.sum(torch.abs(state[:3] - self.GOAL), dim=-1).reshape(1)
+        done = (reward > -0.1).float().reshape(1)
         return reward, done
 
     def is_terminated(self) -> Tensor:
@@ -105,8 +105,8 @@ class PendulumReward(IReward):
         # state&goal: (cos, sin, v_theta)
         next_state = kwargs["next_state"]  # shape = (B, state_dim)
         goal = kwargs["goal"]  # shape = (B, state_dim)
-        reward = -torch.sum(torch.abs(next_state - goal), dim=-1)
-        done = (reward > -0.1).float()
+        reward = -torch.sum(torch.abs(next_state - goal), dim=-1).reshape(-1, 1)
+        done = (reward > -0.1).float().reshape(-1, 1)
         return reward, done
 
     @property
