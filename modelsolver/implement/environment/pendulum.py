@@ -4,10 +4,11 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Self
 
+from modelsolver.abc.reward import IReward
 import numpy as np
 import torch
 from gymnasium.envs.classic_control import PendulumEnv
-from torch import Tensor, from_numpy, tensor
+from torch import Tensor, from_numpy, tensor, concat
 from modelsolver.abc.config import EnvironmentConfig
 from modelsolver.abc.environment import IEnvironment
 
@@ -40,7 +41,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
     def reset(self) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         self.time = 0 if self.time is not None else None
         ob, info = super().reset()
-        return from_numpy(ob).float().reshape(-1), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
+        return concat([from_numpy(ob).float().reshape(-1), self.GOAL]), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         ob, reward, terminated, truncated, info = super().step(2 * action.cpu().detach().numpy())
@@ -56,7 +57,12 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         angle = np.rad2deg(np.arctan2(ob[1], ob[0]))
         text = "↻" if action[0]>0 else "↺"
         logging.debug(f"动作:{text}{abs(action[0]):.2f}, 角度:{angle:.2f}, 角速度:{ob[-1]:.2f}  奖励:{reward:.2f}")
-        return state, tensor(reward).float().reshape(1), self.is_terminated(), self.is_truncated(), info
+        return concat([state,self.GOAL]), tensor(reward).float().reshape(1), self.is_terminated(), self.is_truncated(), info
+
+    def compute_reward_by_goal(self, state:Tensor) -> tuple[Tensor, Tensor]:
+        reward = -torch.sum(torch.abs(state[:3] - self.GOAL), dim=-1)
+        done = (reward > -0.1).float()
+        return reward, done
 
     def is_terminated(self) -> Tensor:
         if self.history_buffer is None:
@@ -87,3 +93,19 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
     @property
     def GOAL(self) -> Tensor:
         return tensor([1.0, 0.0, 0.0]).float().cpu()
+
+class PendulumReward(IReward):
+
+
+    # r = -(theta<sup>2</sup> + 0.1 * theta_dt<sup>2</sup> + 0.001 * torque<sup>2</sup>), [-16.2736044, 0]
+    def forward(self, **kwargs) -> tuple[Tensor, Tensor]:
+        # state&goal: (cos, sin, v_theta)
+        next_state = kwargs["next_state"]  # shape = (B, state_dim)
+        goal = kwargs["goal"]  # shape = (B, state_dim)
+        reward = -torch.sum(torch.abs(next_state - goal), dim=-1)
+        done = (reward > -0.1).float()
+        return reward, done
+
+    @property
+    def is_learnable(self) -> bool:
+        return False

@@ -1,9 +1,8 @@
 """采用依赖注入 (DI) 的模型训练一键式解决方案"""
 
 # region 库导入
-from collections import deque
-import logging
 import os
+from collections import deque
 from dataclasses import is_dataclass
 from math import floor, log
 from typing import Any, Literal, Self
@@ -21,7 +20,8 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, random_split
 
-from modelsolver.abc.config import AgentConfig, DataConfig, HyperParameterConfig, ReplayBufferConfig
+from modelsolver.abc.config import (AgentConfig, DataConfig,
+                                    HyperParameterConfig, ReplayBufferConfig)
 from modelsolver.abc.data import (IDataLoader, IDataProcesser, IDataset,
                                   IReplayBuffer)
 from modelsolver.abc.environment import IEnvironment
@@ -29,6 +29,8 @@ from modelsolver.abc.functional import (IAgentLoss, IAgentOptimizer,
                                         IAgentScheduler, ILoss, IOptimizer,
                                         IScheduler)
 from modelsolver.abc.model import IActor, IAgentModel, ICritic, IModel
+from modelsolver.abc.reward import IReward
+from modelsolver.implement.data.replaybuffer import DefaultReplayBuffer
 from modelsolver.implement.loss import DefaultAgentLoss
 from modelsolver.implement.model import DefaultAgent, NullActor, NullCritic
 from modelsolver.implement.optimizer.adamw import (AdamWOptimizer,
@@ -459,7 +461,7 @@ class AgentModelSolver(ModelSolver):
         self.add_optimizer(AgentAdamWOptimizer)
 
         # 默认的 replay buffer
-        self.add_replay_buffer(IReplayBuffer)
+        self.add_replay_buffer(DefaultReplayBuffer)
 
         # 默认的 loss function
         self.add_loss_function(DefaultAgentLoss)
@@ -557,6 +559,18 @@ class AgentModelSolver(ModelSolver):
                 self.register(IReplayBuffer, instance=buffer, lifespan=Lifespan.singleton)
         return self
 
+    def add_reward(self, reward: IReward | type[IReward]) -> Self:
+        """注册奖励函数
+
+        Args:
+            reward (IReward | type[IReward]): IReward 的类或者实例
+        """
+        match reward:
+            case type():
+                self.register(IReward, implementation_type=reward, lifespan=Lifespan.singleton)
+            case IReward():
+                self.register(IReward, instance=reward, lifespan=Lifespan.singleton)
+        return self
     @property
     def environment(self) -> IEnvironment:
         """RL 环境"""

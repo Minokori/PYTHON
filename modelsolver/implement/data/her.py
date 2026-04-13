@@ -4,14 +4,13 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from dataclasses_json import dataclass_json
-
 import torch
+from dataclasses_json import dataclass_json
 from torch import Tensor
 
 from modelsolver.abc.config import ReplayBufferConfig
 from modelsolver.abc.data import IReplayBuffer
-
+from modelsolver.abc.reward import IReward
 
 
 # TODO 将HER配置移出ReplayBufferConfig
@@ -94,10 +93,13 @@ class Trajectory(NamedTuple):
 class SimpleHEReplay(IReplayBuffer):
     """简单的HER实现 (没有使用环境的reward函数，而是直接计算HER奖励)"""
 
-    def __init__(self, config:ReplayBufferConfig):
+    def __init__(self, config:ReplayBufferConfig, reward:IReward):
         assert issubclass(type(config), HEReplayConfig), "HER 经验回放池需要 HEReplayConfig 实例作为配置"
         self._config = config
+        self._reward = reward
         self._create_buffer()
+        self._trajactory_length = []
+        self._size = 0
         pass
 
     @property
@@ -105,7 +107,7 @@ class SimpleHEReplay(IReplayBuffer):
         return self._config # type: ignore
 
     def __len__(self) -> int:
-        return sum(len(traj) for traj in self.buffer)
+        return self._size
 
     def _create_buffer(self):
         self.buffer: list[Trajectory] = []
@@ -116,7 +118,8 @@ class SimpleHEReplay(IReplayBuffer):
         action: Tensor,
         reward: Tensor,
         next_state: Tensor,
-        done: Tensor, new:bool = False) -> None:
+        done: Tensor,
+        new:bool = False) -> None:
         """向池中添加一条序列 `(s,a,r,s')` , 每个元素 shape = (1, dim)
 
         Args:
@@ -130,22 +133,24 @@ class SimpleHEReplay(IReplayBuffer):
         assert state.is_cpu and action.is_cpu and reward.is_cpu and next_state.is_cpu and done.is_cpu, "输入的 Tensor 必须在 CPU 上"
 
 
-
-        if new:
+        # 添加新轨迹
+        if new or len(self.buffer) == 0:
             # 添加新轨迹
             self.buffer.append(Trajectory(states=[state], actions=[action], rewards=[reward], next_states=[next_state], dones=[done]))
         else:
             self.buffer[-1].append(state, action, reward, next_state, done)
 
-        # 达到容量时, 删除最旧的轨迹
-        if len(self) == self._config.capacity:
+        self._size += 1
 
-            # 若仅有一条轨迹, 无法丢弃, 删除轨迹中最早的一个时间步
-            if len(self.buffer) ==1:
+
+        # 达到容量时, 删除最旧的轨迹
+        while self._size > self._config.capacity:
+            if len(self.buffer) == 1:
                 self.buffer[0].pop(0)
-                self.buffer[-1].append(state, action, reward, next_state, done)
+                self._size -= 1
             else:
-                self.buffer.pop(0)  # 删除最旧的轨迹
+                removed_trajectory = self.buffer.pop(0)  # 删除最旧的轨迹
+                self._size -= len(removed_trajectory)  # 更新池中样本数量
     @property
     def can_sample(self) -> bool:
         """是否可以从池中采样"""
@@ -173,14 +178,12 @@ class SimpleHEReplay(IReplayBuffer):
 
                 g = self.config.state_dim //2
 
-                diff = torch.sum(torch.norm(
-                    goal_state[g:] - next_state[g:],p=0.5
-                )).item()
 
 
                 # TODO 用 IReward 进行注入.
-                generated_reward = self.config.her_reward[0] if diff > self.config.her_threshold else self.config.her_reward[1]  # 为什么是大于?
-                generated_done = False if diff > self.config.her_threshold else True  #为什么是大于?
+                diff = torch.sum(torch.norm(goal_state[g:] - next_state[g:],p=0.5)).item()
+                generated_reward = self.config.her_reward[0] if diff > self.config.her_threshold else self.config.her_reward[1]
+                generated_done = False if diff > self.config.her_threshold else True
 
                 generated_state = torch.cat((state[:g], goal_state[g:]), dim=0)
                 generated_next_state = torch.cat((next_state[:g], goal_state[g:]), dim=0)
@@ -200,4 +203,29 @@ class SimpleHEReplay(IReplayBuffer):
 
                 pass
         return torch.stack(states), torch.stack(actions), torch.stack(rewards), torch.stack(next_states), torch.stack(dones)
+
+
+    def compute_her_reward(self, state: Tensor, action: Tensor, next_state: Tensor, goal_state: Tensor) -> Tensor:
+        """计算HER奖励
+
+        Args:
+            state (Tensor): 当前状态 s
+            action (Tensor): 当前动作 a
+            next_state (Tensor): 下一状态 s'
+            goal_state (Tensor): 目标状态 g
+
+        Returns:
+            reward (Tensor): HER奖励, shape = (1,)
+        """
+        # TODO 用 IReward 进行注入.
+        g = self.config.state_dim //2
+
+        diff = torch.sum(torch.norm(
+            goal_state[g:] - next_state[g:],p=0.5
+        )).item()
+
+        reward = self.config.her_reward[0] if diff > self.config.her_threshold else self.config.her_reward[1]  # 为什么是大于?
+
+        return torch.tensor([reward])
+
 
