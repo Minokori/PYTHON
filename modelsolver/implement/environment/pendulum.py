@@ -44,7 +44,8 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         ob, info = super().reset()
         state= from_numpy(ob.copy()).float().reshape(-1)
         state[-1]/= 8.0  # 归一化角速度
-        return concat([state, self.GOAL]), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
+        reward, done = self.compute_reward_by_goal(state)
+        return concat([state, self.GOAL]), tensor(reward).float().reshape(1), tensor(0).float().reshape(1), False, info
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         ob, reward, terminated, truncated, info = super().step(2 * action.cpu().detach().numpy())
@@ -58,6 +59,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         angle = np.rad2deg(np.arctan2(ob[1], ob[0]))
         text = "↻" if action[0]>0 else "↺"
         logging.debug(f"动作:{text}{abs(action[0]):.2f}, 角度:{angle:.2f}, 角速度:{ob[-1]:.2f}  奖励:{reward:.2f}")
+        reward,done = self.compute_reward_by_goal(state)
         return concat([state,self.GOAL]), tensor(reward).float().reshape(1), self.is_terminated(), self.is_truncated(), info
 
     def compute_reward_by_goal(self, state:Tensor) -> tuple[Tensor, Tensor]:
