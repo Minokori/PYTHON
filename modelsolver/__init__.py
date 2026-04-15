@@ -577,7 +577,7 @@ class AgentModelSolver(ModelSolver):
         if self.has_registration(IEnvironment):
             return self.resolve(IEnvironment)
         else:
-            environment = self._environment_builder.resolve(IEnvironment).build_environment()
+            environment = self._environment_builder.resolve(IEnvironment)
             self.register(IEnvironment, instance=environment)
             return environment
 

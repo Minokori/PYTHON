@@ -39,5 +39,4 @@ class BipedalWalkerEnvironment(IEnvironment):
         state = from_numpy(ob).float().reshape(-1)
         return state, tensor(reward).float().reshape(1), tensor(terminated).float().reshape(1), truncated, info
 
-    def build_environment(self) -> Self:
-        return self
+

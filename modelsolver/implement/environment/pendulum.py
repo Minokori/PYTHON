@@ -2,7 +2,6 @@
 import logging
 from collections import deque
 from dataclasses import dataclass
-from typing import Self
 
 import numpy as np
 import torch
@@ -30,8 +29,9 @@ class PendulumConfig:
 class PendulumEnvironment(PendulumEnv, IEnvironment):
     """摆锤环境"""
 
-    def __init__(self, config: EnvironmentConfig) -> None:
-        super().__init__(render_mode="human")
+    def __init__(self, config: EnvironmentConfig, reward: IReward) -> None:
+        PendulumEnv.__init__(self, render_mode="human")
+        self._reward_function = reward
         self.history_buffer = deque(maxlen=config.terminated_delta) if config.terminated_delta > 0 else None
         """历史状态缓冲区. 不启用终止状态时, 为 None"""
         self.truncated_time = config.truncated_time if config.truncated_time > 0 else None
@@ -86,8 +86,6 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
     def is_success(self, state: Tensor) -> bool:
         return torch.sum(torch.abs(state - tensor([1.0, 0.0, 0.0]))).item() < 1e-3
 
-    def build_environment(self) -> Self:
-        return self
 
     @property
     def ZERO_ACTION(self) -> Tensor:
@@ -104,8 +102,14 @@ class PendulumReward(IReward):
         state = kwargs["state"]  # shape = (B, state_dim)
         action = kwargs["action"]  # shape = (B, action_dim)
         next_state = kwargs["next_state"]  # shape = (B, state_dim)
-        reward = -torch.sum(torch.abs(next_state[:,:3] - next_state[:,3:]), dim=-1).reshape(-1, 1)
-        done = (reward > -0.1).float().reshape(-1, 1)
+
+        batched = len(state.shape) > 1
+        if batched:
+            reward = -torch.sum(torch.abs(next_state[:,:3] - next_state[:,3:]), dim=-1).reshape(-1, 1)
+            done = (reward > -0.1).float().reshape(-1, 1)
+        else:
+            reward = -torch.sum(torch.abs(next_state[:3] - next_state[3:])).reshape(1)
+            done = (reward > -0.1).float().reshape(1)
         return reward, done
 
     @property

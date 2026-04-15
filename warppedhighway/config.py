@@ -83,6 +83,8 @@ class RoadNetworkModel(EnvironmentConfig):
     if TYPE_CHECKING:
         @classmethod
         def from_json(cls, json_str: str) -> 'RoadNetworkModel': ...
+        @classmethod
+        def from_dict(cls, json_dict: dict) -> 'RoadNetworkModel': ...
     """路网"""
     lanes: list[StraightLaneModel] = field(default_factory=list)
     """车道"""

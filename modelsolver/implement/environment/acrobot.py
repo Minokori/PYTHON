@@ -44,5 +44,3 @@ class AcrobotEnvironment( AcrobotEnv,IEnvironment):
                  tensor(terminated).float().reshape(1),
                  truncated,
                  info)
-    def build_environment(self, **kwargs) -> Self:
-        return self

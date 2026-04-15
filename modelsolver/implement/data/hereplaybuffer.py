@@ -159,10 +159,9 @@ class SimpleHEReplay(IReplayBuffer):
         # goal 重标注
         states_t_h = states_t[her_idx]
         next_states_t_h = next_states_t[her_idx]
-        sampled_goal = goal_state[:, :g_index]  # 被选作 goal 的状态的state部分, shape = (her_size, state_dim/2)
 
-        states_t_h[:, g_index:] = sampled_goal # 将state中的goal部分重标注为 sampled_goal(future.state)
-        next_states_t_h[:, g_index:] = sampled_goal  # 将next_state中的goal部分重标注为 sampled_goal(future.state)
+        states_t_h[:, g_index:] = goal_state[:, :g_index] # 将state中的goal部分重标注为 sampled_goal(future.state)
+        next_states_t_h[:, g_index:] = goal_state[:, :g_index]  # 将next_state中的goal部分重标注为 sampled_goal(future.state)
 
         # 保存对her_idx对应样本的重标注结果
         states_t[her_idx] = states_t_h

@@ -1,11 +1,8 @@
 """包装后的 highway-env 停车环境"""
-
-
-import logging
 # region import
-from typing import TYPE_CHECKING, Self, TypedDict
+import logging
+from typing import TYPE_CHECKING, TypedDict
 
-import gymnasium
 import torch
 from highway_env.envs import ParkingEnv
 from highway_env.envs.common.observation import \
@@ -14,14 +11,13 @@ from highway_env.road.lane import StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.kinematics import Vehicle
 from highway_env.vehicle.objects import Landmark, Obstacle
-from numpy import arctan2, float32, rad2deg, zeros_like
-from numpy.linalg import norm
+from numpy import bool_, float32
 from numpy.typing import NDArray
-from torch import Tensor, concatenate, from_numpy, tensor
+from torch import Tensor, concatenate, from_numpy, no_grad, tensor
 
 from modelsolver.abc.environment import IEnvironment
-from warppedhighway.config import (GoalModel, ObstacleModel, RoadNetworkModel,
-                                   StraightLaneModel, VehicleModel)
+from modelsolver.abc.reward import IReward
+from warppedhighway.config import RoadNetworkModel
 
 
 logging.basicConfig(level=logging.DEBUG, filename="parking.log", filemode="w", encoding="utf-8")
@@ -39,6 +35,11 @@ class ObservationType(TypedDict):
     scales: list[float]
     normalize: bool
 
+class InfoType(TypedDict):
+    speed:float
+    crashed:bool
+    action:NDArray[float32]
+    is_success:bool_
 
 class ParkingEnvironmentConfig(TypedDict):
     observation: ObservationType
@@ -98,7 +99,72 @@ class KinematicsGoalObservation(_KinematicsGoalObservation):
     if TYPE_CHECKING:
         def observe(self) -> ObservationDict: ...
 # endregion
+class ParkingReward(IReward):
+    WEIGHT = torch.tensor([1.0, 1.0, 0.01, 0.01, 0.5, 0.5]).reshape(-1,1)
+    # WEIGHT = torch.tensor([1.0, 1.0, 0.01, 0.01, 0.05, 0.05]).reshape(-1,1)
+    """各状态分量在计算奖励时的权重."""
+    @no_grad
+    def forward(self, **kwargs:Tensor) -> tuple[Tensor, Tensor]:
+        # 解压数据
+        state = kwargs["state"]
+        batched = len(state.shape)> 1  # env单步计算时形状为1维度, 经验回放池批量计算时形状为2维度.
+        state = state.reshape(-1,12)
+        action = kwargs["action"].reshape(-1,2)
+        next_state = kwargs["next_state"].reshape(-1,12)
 
+        # 计算奖励
+        # s, g: x, y, vx, vy, cos_h, sin_h
+        # a: steering, acceleration
+
+        # 已到达的state和目标state之间的距离, 以及速度和朝向的差异
+        diff  = (next_state[:,0:6] - next_state[:,6:12]).abs() # (B,6)
+        reward = - (diff @ self.WEIGHT).pow(0.5)  # (B,1)
+
+        # 是否到达目标位置的判断
+        # TODO 应该更新
+        done = torch.where(
+            reward > -0.12,
+            torch.full_like(reward, 1.0),
+            torch.full_like(reward, 0.0)).float() # (B,1)
+        done = self._is_done(diff)
+
+        reward += done * 200  # 到达目标位置的奖励/失败的奖励
+
+        if not batched:
+            reward = reward.reshape(1)
+            done = done.reshape(1)
+        else:
+            reward = reward.reshape(-1,1)
+            done = done.reshape(-1,1)
+        return reward, done
+
+    def _is_done(self, diff:Tensor)-> Tensor:
+        """判断是否到达目标位置"""
+        # ±5° → ≈ 0.087
+        # ±8° → ≈ 0.140
+        # ±10° → ≈ 0.174
+        # ±12° → ≈ 0.209
+        # ±15° → ≈ 0.261
+        # ±20° → ≈ 0.347
+        # diff.shape = (B,6)
+        x_diff = diff[:,0]
+        y_diff = diff[:,1]
+        vx_diff = diff[:,2]
+        vy_diff = diff[:,3]
+        cos_h_diff = diff[:,4]
+        sin_h_diff = diff[:,5]
+
+        position_diff  = (x_diff**2 + y_diff**2).pow(0.5)
+        speed_diff     = (vx_diff**2 + vy_diff**2).pow(0.5)
+        heading_diff   = (cos_h_diff**2 + sin_h_diff**2).pow(0.5)
+
+        total_diff = (position_diff<0.2) * (speed_diff<0.1) * (heading_diff<0.15)
+
+        return total_diff.float().reshape(-1,1)
+
+    @property
+    def is_learnable(self) -> bool:
+        return False
 
 class ParkingEnvironment(IEnvironment, ParkingEnv):
     """单车停车环境"""
@@ -166,187 +232,58 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
 
     if TYPE_CHECKING:
         observation_type_parking: KinematicsGoalObservation
-        last_observation: ObservationDict
-        """上一时刻的观测"""
-        last_action: Tensor
-        """上一时刻的动作"""
     # endregion
 
-    def __init__(self, config: RoadNetworkModel = RoadNetworkModel()):
-        self.network_model = config
+    def __init__(self, config: RoadNetworkModel = RoadNetworkModel(),reward: IReward = ParkingReward()):
+        self._config = config
+        self._reward_function = reward
+        ParkingEnv.__init__(self,dict(self.DEFAULT_CONFIG), render_mode="human")
 
-    # region 配置路网结构
-
-    def add_straight_lanes(self, *lane: StraightLaneModel):
-        self.network_model.lanes.extend(lane)
-        return self
-
-    def add_vehicles(self, *vehicle_with_goal: tuple[VehicleModel, GoalModel | None]):
-        for vehicle, goal in vehicle_with_goal:
-            if goal:
-                vehicle.goal = goal
-            self.network_model.vehicles.append(vehicle)
-        return self
-
-    def add_obstacles(self, *obstacle: ObstacleModel):
-        self.network_model.obstacles.extend(obstacle)
-        return self
-
-    def build_environment(self, config: ParkingEnvironmentConfig | None = None, render_mode: str = "human", ):
-        c = ParkingEnvironment.DEFAULT_CONFIG
-        if config:
-            c.update(config)
-        super().__init__(dict(c), render_mode)
-        self.define_spaces()
-        observation = self.observation_type.observe()
-        self.last_observation = observation
-        self.last_action = from_numpy(zeros_like(self.action_space.sample()))
-        return self
-    # endregion
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
-        """
-        + 在时间步 t 环境处于状态 s_t，agent 根据观察 o_t 选动作 a_t；
-        + 调用 env.step(a_t) 后，环境根据动力学转移到下一个状态 s_{t+1}，并返回与 s_{t+1} 对应的观测 o_{t+1}、奖励 r_t、终止标志 done 和 info。
-
-        >>> next_ob, r, done, info = env.step(action)
-
-        Args:
-            action (NDArray[float32]): t 时刻的动作
-
-        Returns:
-            环境反馈 (tuple[NDArray[float32], float, bool, bool, dict]): t+1 时刻的观测、奖励、终止标志、截断标志和信息
-        """
-        # 记录上一个动作和观测
-        last_action, last_observation = self.last_action, self.last_observation
-        # 记录当前动作和观测
-        action, observation = action, self.observation_type.observe()
-
-        a = action.cpu().detach().numpy()
-
-        next_observation, reward, terminated, truncated, info = super(ParkingEnv, self).step(a)
-
-        # region highway-env 的 step 函数实现逻辑
-        # 执行动作
-        # self.time += 1 / self.config["policy_frequency"]
-        # self._simulate(a)
-
-        # # 计算奖励等
-        # next_observation: ObservationDict = self.observation_type.observe()
-        # reward = self._reward(a)
-        # terminated = self._is_terminated()
-        # truncated = self._is_truncated()
-        # info = self._info(next_observation, a)
+        state = self._convert_observation_to_tensor(self.observation_type_parking.observe())
+        next_observation, reward, terminated, truncated, info = super(ParkingEnv, self).step(action.cpu().detach().numpy())
+        next_state = self._convert_observation_to_tensor(next_observation)
 
 
-        # if self.render_mode == "human":
-        #     self.render()
-        # endregion
+        reward, done = self._reward_function(state=state, action=action, next_state=next_state)
+        if done:
+            logging.info(f"成功!. 状态:{next_state.tolist()}, 奖励:{reward.item()}")
+        reward += done * 200
+        if info["crashed"]:
+            reward -= 200
+            done = torch.tensor(1.0).float()
 
-        # 更新 last_observation 和 last_action
-        self.last_observation: ObservationDict = observation
-        self.last_action = action
+        return next_state,reward,done,truncated,info
 
-        return self._convert_observation_to_tensor(next_observation).float(),\
-                tensor(reward).float().reshape(1),\
-                tensor(terminated).float().reshape(1),\
-                truncated,\
-                info
 
-    def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
-        observation, info = super(ParkingEnv, self).reset(seed=seed, options=options)
-        self.last_observation: ObservationDict = observation
-        self.last_action = from_numpy(zeros_like(self.action_space.sample()))
-        return self._convert_observation_to_tensor(observation).float(), tensor(0).float().reshape(1), tensor(0).float().reshape(1), False, info
+    def reset(self) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
+        observation, info = super(ParkingEnv, self).reset()
+        state = self._convert_observation_to_tensor(observation)
+        reward ,done= self._reward_function(state=state, action=self.ZERO_ACTION, next_state=state)
+        return state, reward, done, False, info
     # endregion
 
-    # region override private method (step内部的私有方法, 包括奖励计算, 终止状态检测)
-    def _is_success(self, achieved_goal: NDArray[float32], desired_goal: NDArray[float32]) -> bool:
-        """判断是否成功达到目标
-
-        ---
-        highway-env 默认的 success 判定函数是基于 acheived_goal 和 desired_goal 之间的欧氏距离是否小于某个阈值判断的.
-        """
-        # 真实世界尺度下的误差,scales定义的全是1, 所以是真实的尺度
-        error = (achieved_goal - desired_goal) * self.config["observation"]["scales"]
-
-        x_error, y_error, vx_error, vy_error, cosh_error, sinh_error = error.copy()
-
-        # 1 位置误差, 单位 m.
-        position_error = norm(error[:2], ord=2)
-
-        # 2 速度误差, 单位 m/s
-        speed_error = norm(error[2:4], ord=2)
-
-        # 3 角度误差, 单位 degree
-        heading = self.vehicle.heading
-        goal_heading = self.vehicle.goal.heading  # type: ignore
-        heading_error = abs(rad2deg(heading - goal_heading))
-
-        return bool((position_error < 0.5) and (heading_error < 5) and (speed_error < 0.05))  #
-
-    def _reward(self,action: NDArray[float32],) -> float:
-
-        """计算奖励. 仅在 step 方法中被调用.
-
-        highway-env 的默认实现包括两部分:
-        + 基于当前状态和期望状态的欧氏距离计算的奖励. 由 `compute_reward` 方法计算.
-        + 碰撞惩罚. 如果发生碰撞, 则根据 `collision_reward` 配置项给予惩罚.
-
-        *highway-env 的默认实现函数签名仅接受`action`入参*
-        """
-        # 0 获取必须的状态信息
-        observation = self.observation_type_parking.observe()
-        last_action = self.last_action
-        last_observation = self.last_observation
-
-        # 1 欧氏距离奖励，根据当前的状态（x,y,vx,vy,cosh,sinh）和期望的状态计算的累计奖励 [-1,0]
-        computed_reward = self.compute_reward(observation['achieved_goal'], observation['desired_goal'], {})
-
-        # 2 碰撞惩罚 [-5 | 0]
-        if self.vehicle.crashed:
-            collison_reward = self.config['collision_reward']
-        else:
-            collison_reward = 0
-
-
-        # 3 动作惩罚 (动作变化小有奖励，动作变化大惩罚) [-1,0]
-        # action_reward = - norm(action - last_action, ord=2)
-
-        # 4 位移奖励 (相较于上一时间点, 离目标越近, 奖励越大)
-        # last_diff = norm(last_observation["achieved_goal"][0:2] - last_observation["desired_goal"][0:2],ord=2)
-        # now_diff = norm(observation["achieved_goal"][0:2] - observation["desired_goal"][0:2])
-        # delta = now_diff - last_diff  # 越小越好
-        # move_reward = -delta # 若delta>0, 说明变远了, 给惩罚
-
-        # 5 目标奖励
-        if self._is_success(observation['achieved_goal'], observation['desired_goal']):
-            logging.debug("成功达到目标!")
-            target_reward = 200
-        else:
-            target_reward = 0
-        return computed_reward + collison_reward  + target_reward # + action_reward # + move_reward
-    # endregion
-
-
-    def logginng_reward(self, action:NDArray[float32], observation:ObservationDict, reward:dict[str, float]):
-        action_text = f"油门:{action[0]:.2f}, 转向:{action[1]:.2f}"
-        observation_text = f"位置:({observation['achieved_goal'][0]:.2f}, {observation['achieved_goal'][1]:.2f}), 速度:({observation['achieved_goal'][2]:.2f}, {observation['achieved_goal'][3]:.2f}), 角度:{rad2deg(arctan2(observation['achieved_goal'][5], observation['achieved_goal'][4]))}"
-        reward_text = " ".join([f"{k}:{v:.2f}" for k, v in reward.items()])
-        logging.debug(f"{action_text} | {observation_text} | {reward_text}")
 
 
     # region override private methods (创建路网)
     def _reset(self):
+        if not self._config.lanes:
+            super()._reset()
+            return
         self._create_road()\
             ._create_vehicles()\
             ._create_obstacles()
 
     def _create_road(self):
         """构建路网"""
+        if not self._config.lanes:
+            super()._create_road()
+            return self
         net = RoadNetwork()
+
         # add lanes
-        for lane_model in self.network_model.lanes:
+        for lane_model in self._config.lanes:
             net.add_lane(
                 lane_model.from_node,
                 lane_model.to_node,
@@ -363,8 +300,11 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         return self
 
     def _create_vehicles(self):
+        if not self._config.vehicles:
+            super()._create_vehicles()
+            return self
         self.controlled_vehicles = []
-        for vehicle_model in self.network_model.vehicles:
+        for vehicle_model in self._config.vehicles:
             vehicle = Vehicle(
                 self.road, vehicle_model.start_position, vehicle_model.start_heading,
                 vehicle_model.start_speed
@@ -389,7 +329,9 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         return self
 
     def _create_obstacles(self):
-        for obstacle_model in self.network_model.obstacles:
+        if not self._config.obstacles:
+            return self
+        for obstacle_model in self._config.obstacles:
             obstacle = Obstacle(
                 self.road,
                 obstacle_model.position,
@@ -402,46 +344,33 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         return self
     # endregion
 
-    def _convert_observation_to_tensor(self, observation: ObservationDict) -> Tensor:
-        """将 highway-env 返回的字典格式观测转为 Tensor"""
-        ob = observation["observation"]
-        achieved_goal = observation["achieved_goal"]
 
-        # assert ob == achieved_goal
-        desired_goal = observation["desired_goal"]
-        return concatenate([from_numpy(ob.copy()), from_numpy(desired_goal.copy())], dim=0)
+    # 其他私有方法
+    def _convert_observation_to_tensor(self, observation_dict: ObservationDict) -> Tensor:
+        """将 highway-env 返回的字典格式观测转为 Tensor (S, GOAL)"""
+        observation = observation_dict["observation"]
+        achieved_goal = observation_dict["achieved_goal"]
 
-
-class DefaultParkingEnv(IEnvironment):
-
-    _ZERO_ACTION = torch.zeros(2)
-
-    def __init__(self) -> None:
-        self.highway_parking = gymnasium.make("parking-v0", render_mode="human")
-
-    def reset(self):
-        self.highway_parking.reset()
-        return self.step(self._ZERO_ACTION)
-
-    def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
-        ob, r, done, timeout, info = self.highway_parking.step(action.cpu().detach().numpy())
-
-        if done:
-            r = r + 200.0 # type: ignore
-
-        return self._convert_observation(ob), tensor(r).float().reshape(1), tensor(done).float(), timeout, info
-
-    def _convert_observation(self, observation: ObservationDict) -> Tensor:
-        """将 highway-env 返回的字典格式观测转为 Tenor"""
-        ob = observation["observation"]
-        achieved_goal = observation["achieved_goal"]
-
-        # assert ob == achieved_goal
-        desired_goal = observation["desired_goal"]
-        return concatenate([from_numpy(ob.copy()).float(), from_numpy(desired_goal.copy()).float()], dim=0)
-
-    def build_environment(self, **kwargs) -> Self:
-        return self
+        # assert observation == achieved_goal
+        desired_goal = observation_dict["desired_goal"]
+        return concatenate([from_numpy(observation.copy()), from_numpy(desired_goal.copy())], dim=0).float()
 
 
-__all__ = ["ParkingEnvironment", "DefaultParkingEnv", "ParkingEnvironmentConfig"]
+    # 属性
+    @property
+    def ZERO_ACTION(self) -> Tensor:
+        return tensor([0.0, 0.0]).float()
+    @property
+    def GOAL(self) -> Tensor:
+        return tensor(self.road.objects[0].position)  # type: ignore
+
+
+
+
+
+
+
+
+
+
+__all__ = ["ParkingEnvironment"]
