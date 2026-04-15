@@ -673,7 +673,7 @@ class AgentModelSolver(ModelSolver):
             method (Literal[&quot;random&quot;, &quot;model_based&quot;], optional): 预训练方法. 对动作随机采样或使用模型初始参数进行采样. Defaults to "random".
         """
         step = step or self.replay_buffer_config.minimal_capacity
-        shape = torch.zeros(self.replay_buffer.config.action_dim).reshape(1)
+        shape = torch.zeros(self.replay_buffer.config.action_dim).reshape(-1)
         ob, r, terminated, truncated, info = self.environment.reset()
         self.replay_buffer.append(ob,self.environment.ZERO_ACTION,r,ob, terminated, new=True)
         for _ in range(step):

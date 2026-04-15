@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import torch
@@ -10,6 +9,7 @@ from torch.distributions import Normal
 from torch.nn import Module
 
 from .config import AgentConfig
+
 
 class IModule(ABC, Module):
     """模块接口, 定义了模型的基本结构和方法, 包括前向传播和反向传播等"""
@@ -72,6 +72,12 @@ class IModel(ABC, Module):
     @property
     @abstractmethod
     def name_for_save(self) -> str:
+        """模型保存的名称"""
+        ...
+
+    @name_for_save.setter
+    @abstractmethod
+    def name_for_save(self, value: str):
         """模型保存的名称"""
         ...
 

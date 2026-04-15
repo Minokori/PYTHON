@@ -172,8 +172,8 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         """上一时刻的动作"""
     # endregion
 
-    def __init__(self, network: RoadNetworkModel = RoadNetworkModel()):
-        self.network_model = network
+    def __init__(self, config: RoadNetworkModel = RoadNetworkModel()):
+        self.network_model = config
 
     # region 配置路网结构
 
@@ -354,7 +354,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
                     lane_model.start_position,
                     lane_model.end_position,
                     lane_model.width,
-                    line_types=lane_model.line_types,
+                    line_types=lane_model.line_types, # type: ignore
                 ),
             )
 
@@ -376,7 +376,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
             if vehicle_model.goal:
                 vehicle.goal = Landmark(  # type: ignore
                     self.road,
-                    vehicle_model.goal.position.tolist(),
+                    vehicle_model.goal.position,
                     heading=vehicle_model.goal.heading,
                     speed=vehicle_model.goal.speed
                 )
@@ -392,7 +392,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         for obstacle_model in self.network_model.obstacles:
             obstacle = Obstacle(
                 self.road,
-                obstacle_model.position.tolist(),
+                obstacle_model.position,
                 obstacle_model.heading
             )
             obstacle.LENGTH = obstacle_model.length
@@ -442,3 +442,6 @@ class DefaultParkingEnv(IEnvironment):
 
     def build_environment(self, **kwargs) -> Self:
         return self
+
+
+__all__ = ["ParkingEnvironment", "DefaultParkingEnv", "ParkingEnvironmentConfig"]

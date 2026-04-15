@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from dataclasses_json import dataclass_json
 from highway_env.road.lane import LineType
-from numpy import float32
-from numpy.typing import NDArray
+
+from modelsolver.abc.config import EnvironmentConfig
 
 
 # region 定义路网使用的模型
@@ -15,13 +16,13 @@ class StraightLaneModel:
     """起始点, 用于连接路段"""
     to_node: str
     """终点, 用于连接路段"""
-    start_position: NDArray[float32]
+    start_position: tuple[float, float]
     """起始位置 (x,y)"""
-    end_position: NDArray[float32]
+    end_position: tuple[float, float]
     """终点位置 (x,y)"""
     width: float = 3.75
     """车道宽度"""
-    line_types: tuple[LineType, LineType] = (LineType.CONTINUOUS_LINE, LineType.CONTINUOUS_LINE)  # type: ignore
+    line_types: tuple[int, int] = (LineType.CONTINUOUS_LINE, LineType.CONTINUOUS_LINE)
     """车道线类型, (左侧, 右侧), 0: 无, 1: 虚线, 2: 连续, 3: 连续线"""
 
 
@@ -29,7 +30,7 @@ class StraightLaneModel:
 @dataclass
 class GoalModel:
     """车辆目标"""
-    position: NDArray[float32]
+    position: tuple[float, float]
     """位置 (x,y)"""
     heading: float
     """朝向, (东0, 逆时针, 弧度制)"""
@@ -41,7 +42,7 @@ class GoalModel:
 @dataclass
 class VehicleModel:
     """车辆"""
-    start_position: NDArray[float32]
+    start_position: tuple[float, float]
     """起始位置 (x,y)"""
     start_heading: float
     """起始朝向, (东0, 逆时针, 弧度制)"""
@@ -65,7 +66,7 @@ class ObstacleModel:
     """长度"""
     width: float
     """宽度"""
-    position: NDArray[float32]
+    position: tuple[float, float]
     """位置 (x,y)"""
     heading: float
     """朝向, (东0, 逆时针, 弧度制)"""
@@ -78,7 +79,10 @@ class ObstacleModel:
 
 @dataclass_json
 @dataclass
-class RoadNetworkModel:
+class RoadNetworkModel(EnvironmentConfig):
+    if TYPE_CHECKING:
+        @classmethod
+        def from_json(cls, json_str: str) -> 'RoadNetworkModel': ...
     """路网"""
     lanes: list[StraightLaneModel] = field(default_factory=list)
     """车道"""
