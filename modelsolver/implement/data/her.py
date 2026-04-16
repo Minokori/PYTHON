@@ -94,7 +94,7 @@ class SimpleHEReplay(IReplayBuffer):
         """返回当前有效样本数。"""
         return self._size
 
-    def __getitem__(self, index: int|slice) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    def __getitem__(self, index: int|slice|Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """获取 trasition
 
         Args:
@@ -192,8 +192,8 @@ class SimpleHEReplay(IReplayBuffer):
         sampled_dones[her_batch_indices,0:1] = generated_dones
 
         # 将 done 保证为二维列向量后返回
-        normalized_done_tensor = self._ensure_done_2d(updated_dones)
-        return relabeled_states, sampled_actions, updated_rewards, relabeled_next_states, normalized_done_tensor
+        sampled_dones = self._ensure_done_2d(sampled_dones)
+        return sampled_states, sampled_actions, sampled_rewards, sampled_next_states, sampled_dones
 
     # region private methods
 

@@ -66,7 +66,8 @@ class DefaultReplayBuffer(IReplayBuffer):
             new (bool): 是否为新轨迹的开始. 默认为 False, 即默认添加到当前轨迹中. 设置为 True 时, 将在池中添加一条新轨迹.
         """
         # new 只对HER算法有意义
-        if new: return
+        if new:
+            return
         self._state_buffer.append(state.cpu().detach().float().reshape(-1))
         self._action_buffer.append(action.cpu().detach().float().reshape(-1))
         self._reward_buffer.append(reward.cpu().detach().float().reshape(-1))

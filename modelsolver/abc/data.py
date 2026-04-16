@@ -62,8 +62,6 @@ class IDataLoader(DataLoader):
 # region 强化学习相关接口
 class IReplayBuffer(IDataset, ABC):
     """经验回放池接口
-
-    *IReplayBuffer 已经有简单的实现, 可以不用重载*
     """
     @property
     def config(self) -> ReplayBufferConfig:...
@@ -94,6 +92,7 @@ class IReplayBuffer(IDataset, ABC):
         ...
     # endregion
 
+    @abstractmethod
     def append(
             self,
             state: Tensor,
