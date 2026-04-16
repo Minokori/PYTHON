@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from gymnasium.envs.classic_control import PendulumEnv
-from torch import Tensor, concat, from_numpy, tensor
+from torch import Tensor, concat, from_numpy, no_grad, tensor
 
 from modelsolver.abc.config import EnvironmentConfig
 from modelsolver.abc.environment import IEnvironment
@@ -29,7 +29,7 @@ class PendulumConfig:
 class PendulumEnvironment(PendulumEnv, IEnvironment):
     """摆锤环境"""
 
-    def __init__(self, config: EnvironmentConfig, reward: IReward) -> None:
+    def __init__(self, config: EnvironmentConfig, reward: IReward ) -> None:
         PendulumEnv.__init__(self, render_mode="human")
         self._reward_function = reward
         self.history_buffer = deque(maxlen=config.terminated_delta) if config.terminated_delta > 0 else None
@@ -44,13 +44,15 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         ob, info = super().reset()
         state= from_numpy(ob.copy()).float().reshape(-1)
         state[-1]/= 8.0  # 归一化角速度
-        reward, done = self.compute_reward_by_goal(state)
-        return concat([state, self.GOAL]), reward, tensor(0).float().reshape(1), False, info
+        state = concat([state, self.GOAL])
+        reward, done = self._reward_function(state=state, action=self.ZERO_ACTION, next_state=state)
+        return state, reward, tensor(0).float().reshape(1), False, info
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict]:
         ob, reward, terminated, truncated, info = super().step(2 * action.cpu().detach().numpy())
         state = from_numpy(ob.copy()).float().reshape(-1)
         state[-1]/= 8.0  # 归一化角速度
+        state = concat([state, self.GOAL])
         if self.history_buffer is not None:
             self.history_buffer.append(state)
         if self.time is not None:
@@ -59,13 +61,11 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
         angle = np.rad2deg(np.arctan2(ob[1], ob[0]))
         text = "↻" if action[0]>0 else "↺"
         logging.debug(f"动作:{text}{abs(action[0]):.2f}, 角度:{angle:.2f}, 角速度:{ob[-1]:.2f}  奖励:{reward:.2f}")
-        reward,done = self.compute_reward_by_goal(state)
-        return concat([state,self.GOAL]), reward, self.is_terminated(), self.is_truncated(), info
 
-    def compute_reward_by_goal(self, state:Tensor) -> tuple[Tensor, Tensor]:
-        reward = -torch.sum(torch.abs(state[:3] - self.GOAL), dim=-1).reshape(1)
-        done = (reward > -0.1).float().reshape(1)
-        return reward, done
+
+        reward,done = self._reward_function(state=state, action=action, next_state=state)
+        return state, reward, self.is_terminated(), self.is_truncated(), info
+
 
     def is_terminated(self) -> Tensor:
         if self.history_buffer is None:
@@ -84,7 +84,7 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
             return False
 
     def is_success(self, state: Tensor) -> bool:
-        return torch.sum(torch.abs(state - tensor([1.0, 0.0, 0.0]))).item() < 1e-3
+        return torch.sum(torch.abs(state[0:3] - tensor([1.0, 0.0, 0.0]))).item() < 1e-3
 
 
     @property
@@ -97,19 +97,31 @@ class PendulumEnvironment(PendulumEnv, IEnvironment):
 
 class PendulumReward(IReward):
 
-    def forward(self, **kwargs) -> tuple[Tensor, Tensor]:
+    WEIGHT = tensor([1.0, 0.8, 0.2]).float().cpu().reshape(-1,1)
+
+    @no_grad
+    def forward(self, **kwargs:Tensor) -> tuple[Tensor, Tensor]:
         # state&goal: (cos, sin, v_theta)
         state = kwargs["state"]  # shape = (B, state_dim)
-        action = kwargs["action"]  # shape = (B, action_dim)
-        next_state = kwargs["next_state"]  # shape = (B, state_dim)
-
         batched = len(state.shape) > 1
-        if batched:
-            reward = -torch.sum(torch.abs(next_state[:,:3] - next_state[:,3:]), dim=-1).reshape(-1, 1)
-            done = (reward > -0.1).float().reshape(-1, 1)
-        else:
-            reward = -torch.sum(torch.abs(next_state[:3] - next_state[3:])).reshape(1)
-            done = (reward > -0.1).float().reshape(1)
+        state = state.reshape(-1,6)
+        action = kwargs["action"].reshape(-1,1)  # shape = (B, action_dim)
+        next_state = kwargs["next_state"].reshape(-1,6)  # shape = (B, state_dim)
+
+
+
+
+        reward = -((next_state[:,:3] - next_state[:,3:]).abs() @ self.WEIGHT).reshape(-1,1)
+        done = (reward > -0.1).float().reshape(-1, 1)
+
+        reward += torch.where((state[:,0:1]+1).abs()< 0.2, -2, 0)  # 当cos接近-1时, 给予较大的负奖励, 以鼓励智能体远离下垂位置
+
+        reward += done * 3  # 当达到目标位置时, 给予额外奖励
+
+        if not batched:
+            reward = reward.reshape(1)
+            done = done.reshape(1)
+
         return reward, done
 
     @property

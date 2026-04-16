@@ -450,7 +450,7 @@ class AgentModelSolver(ModelSolver):
         self.stats["rewards"] = []
         self.stats["actor_losses"] = []
         self.stats["critic_losses"] = []
-        self._environment_builder = Container()
+
 
         # 默认 Actor 和 Critic 的占位符
         self.add_model_component(IActor, NullActor)
@@ -520,7 +520,7 @@ class AgentModelSolver(ModelSolver):
             environment_config (dataclass): dataclass类的环境配置实例
         """
         assert is_dataclass(environment_config), "config must be a dataclass"
-        self._environment_builder.register(type(environment_config), instance=environment_config, lifespan=Lifespan.singleton)
+        self.register(type(environment_config), instance=environment_config, lifespan=Lifespan.singleton)
         return self
 
 
@@ -532,9 +532,9 @@ class AgentModelSolver(ModelSolver):
         """
         match environment:
             case type():
-                self._environment_builder.register(IEnvironment, implementation_type=environment, lifespan=Lifespan.singleton)
+                self.register(IEnvironment, implementation_type=environment, lifespan=Lifespan.singleton)
             case IEnvironment():
-                self._environment_builder.register(IEnvironment, instance=environment, lifespan=Lifespan.singleton)
+                self.register(IEnvironment, instance=environment, lifespan=Lifespan.singleton)
         return self
 
     def add_replay_buffer_config(self, config: ReplayBufferConfig)->Self:
@@ -577,7 +577,7 @@ class AgentModelSolver(ModelSolver):
         if self.has_registration(IEnvironment):
             return self.resolve(IEnvironment)
         else:
-            environment = self._environment_builder.resolve(IEnvironment)
+            environment = self.resolve(IEnvironment)
             self.register(IEnvironment, instance=environment)
             return environment
 
@@ -680,6 +680,7 @@ class AgentModelSolver(ModelSolver):
             if terminated or truncated:
                 ob, r, terminated, truncated, info = self.environment.reset()
                 self.replay_buffer.append(ob,self.environment.ZERO_ACTION,r,ob, terminated, new=True)
+            # 采取动作
             match method:
                 case "random":
                     action = torch.rand_like(shape)*2-1

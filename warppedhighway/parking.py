@@ -112,23 +112,29 @@ class ParkingReward(IReward):
         action = kwargs["action"].reshape(-1,2)
         next_state = kwargs["next_state"].reshape(-1,12)
 
-        # 计算奖励
-        # s, g: x, y, vx, vy, cos_h, sin_h
-        # a: steering, acceleration
+        # 计算奖励 s, g: x, y, vx, vy, cos_h, sin_h | a: steering, acceleration
 
         # 已到达的state和目标state之间的距离, 以及速度和朝向的差异
         diff  = (next_state[:,0:6] - next_state[:,6:12]).abs() # (B,6)
+        theta_diff = torch.rad2deg(
+            (
+                torch.atan2(next_state[:,5], next_state[:,4]) -
+                torch.atan2(next_state[:,11], next_state[:,10])
+                ).abs()
+                ).reshape(-1,)
+        # reward = - (diff.pow(2) @ self.WEIGHT).pow(0.5)  # (B,1)
         reward = - (diff @ self.WEIGHT).pow(0.5)  # (B,1)
 
         # 是否到达目标位置的判断
         # TODO 应该更新
-        done = torch.where(
-            reward > -0.12,
-            torch.full_like(reward, 1.0),
-            torch.full_like(reward, 0.0)).float() # (B,1)
-        done = self._is_done(diff)
+        # done = torch.where(
+        #     reward > -0.12,
+        #     torch.full_like(reward, 1.0),
+        #     torch.full_like(reward, 0.0)).float() # (B,1)
+        done = self._is_done(diff,theta_diff)
 
-        reward += done * 200  # 到达目标位置的奖励/失败的奖励
+        # reward += done * 200  # 到达目标位置的奖励
+        reward += done * 5  # 到达目标位置的奖励
 
         if not batched:
             reward = reward.reshape(1)
@@ -138,7 +144,7 @@ class ParkingReward(IReward):
             done = done.reshape(-1,1)
         return reward, done
 
-    def _is_done(self, diff:Tensor)-> Tensor:
+    def _is_done(self, diff:Tensor, theta_diff:Tensor)-> Tensor:
         """判断是否到达目标位置"""
         # ±5° → ≈ 0.087
         # ±8° → ≈ 0.140
@@ -151,14 +157,12 @@ class ParkingReward(IReward):
         y_diff = diff[:,1]
         vx_diff = diff[:,2]
         vy_diff = diff[:,3]
-        cos_h_diff = diff[:,4]
-        sin_h_diff = diff[:,5]
 
         position_diff  = (x_diff**2 + y_diff**2).pow(0.5)
         speed_diff     = (vx_diff**2 + vy_diff**2).pow(0.5)
-        heading_diff   = (cos_h_diff**2 + sin_h_diff**2).pow(0.5)
 
-        total_diff = (position_diff<0.2) * (speed_diff<0.1) * (heading_diff<0.15)
+
+        total_diff = (position_diff<0.2) * (speed_diff<0.1) * (theta_diff<10)
 
         return total_diff.float().reshape(-1,1)
 
@@ -249,7 +253,7 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         reward, done = self._reward_function(state=state, action=action, next_state=next_state)
         if done:
             logging.info(f"成功!. 状态:{next_state.tolist()}, 奖励:{reward.item()}")
-        reward += done * 200
+
         if info["crashed"]:
             reward -= 200
             done = torch.tensor(1.0).float()
