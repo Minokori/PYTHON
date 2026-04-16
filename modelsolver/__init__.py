@@ -761,7 +761,7 @@ class AgentModelSolver(ModelSolver):
         # 计算 t+1 时的 目标 Q 值
         with no_grad():
             q_next = self.model(next_states.cuda(), None, "target_q")
-            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.cuda())
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.abs().cuda())
         # 计算当前的 Q 值
         q = self.model(states.cuda(), actions.cuda(), "q")
 
@@ -798,7 +798,7 @@ class AgentModelSolver(ModelSolver):
         # 计算 t+1 时的 目标 Q 值
         with no_grad():
             q_next = self.model(next_states.cuda(), None, "target_q_sac")
-            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.cuda())
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.abs().cuda())
 
         # 计算当前的 Q 值
         q = self.model(states.cuda(), actions.cuda(), "q")
@@ -855,7 +855,7 @@ class AgentModelSolver(ModelSolver):
 
         with no_grad():
             q_next = self.model(next_states.cuda(), None, "target_q_td3")
-            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.cuda())
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.abs().cuda())
 
         q = self.model(states.cuda(), actions.cuda(), "q")
         q_other = self.model(states.cuda(), actions.cuda(), "q_other")
@@ -886,6 +886,90 @@ class AgentModelSolver(ModelSolver):
 
         print(f"Critic Loss 1: {q_loss.item():.4f}, Critic Loss 2: {q_other_loss.item():.4f}")
 
+
+    def train_through_sac_bcwithher(self, epoch: int):
+        """使用 SAC 结合 BC-HER 进行单步训练"""
+        # 解压数据
+
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample()
+        for batch in self.train_dataloader:
+            states_coach, actions_coach = self.data_processer.preprocess(batch)
+            break
+
+        # 替换概率
+        p = 0.2
+        goal_start_idx = self.model.config.state_channels //2
+        mask = (torch.rand(len(states)) < p)
+
+        # 环境目标替换为教练指导
+        # TODO 假如实际state更接近真实目标而不是教练目标怎么办
+        
+        states[mask,goal_start_idx:] = states_coach[mask,goal_start_idx,:]
+        next_states[mask,goal_start_idx:] = states_coach[mask,goal_start_idx,:]
+
+
+
+
+
+
+        # 添加的逻辑: 使用教练的数据替代原始GOAL数据进行训练
+
+
+
+        # region 训练 Critic 网络
+        # 计算 t+1 时的 目标 Q 值
+        with no_grad():
+            q_next = self.model(next_states.cuda(), None, "target_q_sac")
+            q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.abs().cuda())
+
+        # 计算当前的 Q 值
+        q = self.model(states.cuda(), actions.cuda(), "q")
+        q_other = self.model(states.cuda(), actions.cuda(), "q_other")
+
+        # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
+        critic_loss = self.loss_function(q, q_target.detach(), "sac_critic")
+        critic_other_loss = self.loss_function(q_other, q_target.detach(), "sac_critic")
+
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+
+        self.critic_other_optimizer.zero_grad()
+        critic_other_loss.backward()
+        self.critic_other_optimizer.step()
+        # endregion
+
+        # region 训练 Actor 网络
+
+        # 计算当前的 Q 值
+        predicted_actions, log_probs = self.model(states.cuda(), None, "action_with_log_prob")
+
+        q = self.model(states.cuda(), predicted_actions, "q")
+        q_other = self.model(states.cuda(), predicted_actions, "q_other")
+
+        # 计算 Actor 损失并更新参数 (最大化Q)
+        actor_loss = self.loss_function(q, None, "sac_actor", q_other=q_other, log_prob=log_probs, log_alpha=self.model.log_alpha)
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+        # endregion
+
+        # region 更新 alpha, SB3 称为"ent_coef"
+        if self.model.config.alpha_learnable:
+            alpha_loss = -(self.model.log_alpha * (log_probs + self.model.config.target_entropy).detach()).mean()
+            self.log_alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.log_alpha_optimizer.step()
+        # endregion
+
+        # 记录损失和累计奖励
+        self.train_actor_losses.append(actor_loss.item())
+        self.train_critic_losses.append((critic_loss.item() + critic_other_loss.item()) / 2)
+
+        # 软更新目标网络
+        self.model.soft_update_target_net("critic", "critic_other")
+
+
     def train_single_epoch_offline(self, epoch: int, method: str) -> bool:
         """使用离线 RL 方法单步训练
 
@@ -907,7 +991,7 @@ class AgentModelSolver(ModelSolver):
 
 
         # 主循环: 当没有完成且没有超时, 与环境交互并训练模型
-        while not done and not timeout:
+        while not done.abs().bool() and not timeout:
 
             # 与环境交互1步
             with no_grad():
@@ -955,7 +1039,6 @@ class AgentModelSolver(ModelSolver):
         self.stats["rewards"].append(total_r.item())
         return True
 
-
     def train_single_step_through_irl(self):
         """使用 irl 进行单步训练.
 
@@ -981,9 +1064,8 @@ class AgentModelSolver(ModelSolver):
         self.model.eval()
         ob, r, done, timeout, info = self.environment.reset()
         ob_list = []
-        done = False
         timeout = False
-        while not done and not timeout:
+        while not done.abs().bool() and not timeout:
             action = self.model(ob.cuda())
             ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
             ob_list.append(ob)

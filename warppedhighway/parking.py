@@ -100,6 +100,13 @@ class KinematicsGoalObservation(_KinematicsGoalObservation):
         def observe(self) -> ObservationDict: ...
 # endregion
 class ParkingReward(IReward):
+    """
+    [TODO]:
+    + 奖励权重
+    + 奖励 ~ 状态目标的距离选用 L1 还是 L2
+    + 成功判断条件
+    + 失败惩罚
+    """
     WEIGHT = torch.tensor([1.0, 1.0, 0.01, 0.01, 0.5, 0.5]).reshape(-1,1)
     # WEIGHT = torch.tensor([1.0, 1.0, 0.01, 0.01, 0.05, 0.05]).reshape(-1,1)
     """各状态分量在计算奖励时的权重."""
@@ -254,9 +261,10 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         if done:
             logging.info(f"成功!. 状态:{next_state.tolist()}, 奖励:{reward.item()}")
 
+        # 添加碰撞惩罚, 并将 done的标志位设置为-1表示failed
         if info["crashed"]:
             reward -= 200
-            done = torch.tensor(1.0).float()
+            done = torch.tensor(-1.0).float()
 
         return next_state,reward,done,truncated,info
 
@@ -367,14 +375,5 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
     @property
     def GOAL(self) -> Tensor:
         return tensor(self.road.objects[0].position)  # type: ignore
-
-
-
-
-
-
-
-
-
 
 __all__ = ["ParkingEnvironment"]
