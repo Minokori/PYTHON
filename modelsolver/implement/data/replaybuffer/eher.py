@@ -5,16 +5,16 @@ from dataclasses import dataclass
 import pandas as pd
 import torch
 from dataclasses_json import dataclass_json
-from torch import Tensor, no_grad
-
 from modelsolver.abc.config import ReplayBufferConfig
 from modelsolver.abc.data import IReplayBuffer
 from modelsolver.abc.reward import IReward
 from modelsolver.implement.data.replaybuffer.store.expert import ExpertStore
 from modelsolver.implement.data.replaybuffer.store.trajectory import \
     TrajectoryStore
+from torch import Tensor, no_grad
 
-
+import logging
+logging.basicConfig(level=logging.INFO, filename="./eher.log", filemode="w", encoding="utf-8")
 @dataclass_json
 @dataclass
 class EHERConfig(ReplayBufferConfig):
@@ -51,7 +51,7 @@ class ExpertHEReplayBuffer(IReplayBuffer):
 
     def __init__(self, config: ReplayBufferConfig, reward: IReward):
         assert issubclass(type(config), EHERConfig), "HER 经验回放池需要 HEReplayBufferConfig 实例作为配置"
-
+        open("./eher.log", "w").close()  # 每次初始化时清空日志文件
         self._config = config
         self._her_reward_fn = reward
 
@@ -147,6 +147,10 @@ class ExpertHEReplayBuffer(IReplayBuffer):
         if idx_e.numel() > 0:
             states_t[idx_e, g_index:] = goal_e
             next_states_t[idx_e, g_index:] = goal_e
+            # DEBUG
+            logging.info(f"选择了 {idx_e.numel()} 个专家重标注样本.")
+            for s in next_states_t[idx_e]:
+                logging.info(f"专家重标注样本的 next_state: {s.numpy()}")
 
         # 重算HER命中样本的reward/done
         rew_new, done_new = self._her_reward_fn(
