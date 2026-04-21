@@ -99,6 +99,8 @@ class KinematicsGoalObservation(_KinematicsGoalObservation):
     if TYPE_CHECKING:
         def observe(self) -> ObservationDict: ...
 # endregion
+
+
 class ParkingReward(IReward):
     """
     [TODO]:
@@ -107,17 +109,27 @@ class ParkingReward(IReward):
     + 成功判断条件
     + 失败惩罚
     """
+    if TYPE_CHECKING:
+        def __call__(self, **kwargs:Tensor) -> tuple[Tensor, Tensor]:
+            """计算奖励和done
+
+            Args:
+                **kwargs (Tensor): 包含 state, action, next_state等必要信息的字.
+
+                必要的字段: "next_state".
+            """
+            ...
+
     WEIGHT = torch.tensor([1.0, 1.0, 0.01, 0.01, 0.5, 0.5]).reshape(-1,1)
     # WEIGHT = torch.tensor([1.0, 1.0, 0.01, 0.01, 0.05, 0.05]).reshape(-1,1)
     """各状态分量在计算奖励时的权重."""
     @no_grad
     def forward(self, **kwargs:Tensor) -> tuple[Tensor, Tensor]:
+        assert "next_state" in kwargs, "计算奖励需要 next_state 字段"
         # 解压数据
-        state = kwargs["state"]
-        batched = len(state.shape)> 1  # env单步计算时形状为1维度, 经验回放池批量计算时形状为2维度.
-        state = state.reshape(-1,12)
-        action = kwargs["action"].reshape(-1,2)
-        next_state = kwargs["next_state"].reshape(-1,12)
+        next_state = kwargs["next_state"]
+        batched = len(next_state.shape)> 1  # env单步计算时形状为1维度, 经验回放池批量计算时形状为2维度.
+        next_state =next_state.reshape(-1,12)
 
         # 计算奖励 s, g: x, y, vx, vy, cos_h, sin_h | a: steering, acceleration
 

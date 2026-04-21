@@ -97,9 +97,6 @@ class TrajectoryStore:
             reward (Tensor): 奖励, shape = (1,)
             next_state (Tensor): 下一状态, shape = (state_dim,)
             done (Tensor): 是否结束, shape = (1,)
-
-            ---
-
             new (bool): 是否为新轨迹的开始. 默认为 False, 即默认添加到当前轨迹中. 设置为 True 时, 将在池中添加一条新轨迹.
         """
         if self._current_trajectory_id<0:
@@ -133,8 +130,20 @@ class TrajectoryStore:
             self._size += 1
 
         self._cache_dirty = True
+    def sample_postions(self, batch_size: int) -> Tensor:
+        """随机采样一批有效位置索引
 
+        Args:
+            batch_size (int): 采样的批量大小
 
+        Returns:
+            Tensor: 采样到的位置索引, shape = (batch_size,)
+        """
+        valid_pos = self._get_valid_positions()
+        n_valid = valid_pos.numel()
+        assert n_valid > 0, "buffer has no valid samples"
+        pos_now = valid_pos[torch.randint(0, n_valid, (batch_size,))]
+        return pos_now
 
 
 
@@ -163,7 +172,7 @@ class TrajectoryStore:
         return self._states[positions]
 
     #region private methods
-    def get_valid_positions(self) -> Tensor:
+    def _get_valid_positions(self) -> Tensor:
         if self._valid_pos_cache is not None and not self._cache_dirty:
             return self._valid_pos_cache
 

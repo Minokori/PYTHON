@@ -65,6 +65,7 @@ class IReplayBuffer(IDataset, ABC):
     """
     @property
     def config(self) -> ReplayBufferConfig:...
+
     def __init__(self, config: ReplayBufferConfig):
         ...
 

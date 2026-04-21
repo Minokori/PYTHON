@@ -11,7 +11,7 @@ from modelsolver.abc.reward import IReward
 
 @dataclass_json
 @dataclass
-class HEReplayBufferConfig(ReplayBufferConfig):
+class XXHERConfig(ReplayBufferConfig):
     """HER经验回放池配置。"""
 
     her_p: float = 0.8
@@ -30,11 +30,8 @@ class HEReplayBufferConfig(ReplayBufferConfig):
 class SimpleHEReplay(IReplayBuffer):
     """高性能版简单HER实现（扁平存储 + 可注入奖励函数）。"""
 
-
-
-
     def __init__(self, config: ReplayBufferConfig, reward: IReward):
-        assert issubclass(type(config), HEReplayBufferConfig), "HER 经验回放池需要 HEReplayBufferConfig 实例作为配置"
+        assert issubclass(type(config), XXHERConfig), "HER 经验回放池需要 HEReplayBufferConfig 实例作为配置"
 
         # region DI注入配置和HER奖励函数
         self._config = config
@@ -86,7 +83,7 @@ class SimpleHEReplay(IReplayBuffer):
         # endregion
 
     @property
-    def config(self) -> HEReplayBufferConfig:
+    def config(self) -> XXHERConfig:
         """返回类型收窄后的配置对象。"""
         return self._config  # type: ignore
 
@@ -126,7 +123,8 @@ class SimpleHEReplay(IReplayBuffer):
         """
         assert state.is_cpu and action.is_cpu and reward.is_cpu and next_state.is_cpu and done.is_cpu, "输入的 Tensor 必须在 CPU 上"
 
-        if new: self._start_new_trajectory()
+        if new:
+            self._start_new_trajectory()
 
         self._write_transition(state, action, reward, next_state, done)
 

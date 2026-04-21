@@ -19,7 +19,7 @@ class ExpertStore:
         self.state_info = state_info
         self.action_info = action_info
         self.goal_dim = self.state_info[1] // 2
-        self.expert_state, self._actions = self._init_expert_data_from_dataframe(df)
+        self.expert_state, self.expert_action = self._init_expert_data_from_dataframe(df)
 
     def _init_expert_data_from_dataframe(self, df:pd.DataFrame) -> tuple[Tensor, Tensor]:
         assert len(df) > 0, "expert dataframe 不能为空"
@@ -31,13 +31,13 @@ class ExpertStore:
         for _, row in df.iterrows():
             s = from_numpy(row[self.state_info[0]]).reshape(-1).float()
             a = from_numpy(row[self.action_info[0]]).reshape(-1).float()
-            goal_states.append(s[:self.goal_dim])
+            goal_states.append(s)
             actions.append(a)
 
         return torch.stack(goal_states, dim=0), torch.stack(actions, dim=0)  # shape = (N, S/2), (N, A)
 
     @no_grad
-    def sample_expert_states(self, batch_state: Tensor, topk: int) -> Tensor:
+    def sample_expert_states(self, batch_state: Tensor, topk: int) -> tuple[Tensor, Tensor]:
         """
         对batch中每个当前state:
         - 找到expert中最近的top-k
@@ -45,17 +45,17 @@ class ExpertStore:
 
 
         Args:
-            batch_state (Tensor): 传入的状态，shape = (B, S/2)，**注意: 这里的state应该是不包含goal信息的完整状态的一部分，即obs_dim部分**
+            batch_state (Tensor): 传入的状态，shape = (B, S)
             topk (int): 每个输入状态对应的最近邻专家状态数量.
 
         Returns:
-            expert_state (Tensor): 采样到的专家状态, shape = (B, S/2)
+            expert_ob (Tensor): 采样到的专家观测, shape = (B, S/2)
+            chosen_indices (Tensor): 被选中的专家状态的索引, shape = (B,)
         """
-        expert = self.expert_state  # type: ignore
-        k = max(1, min(int(topk), expert.shape[0]))
+        k = max(1, min(topk, self.expert_state.shape[0]))
 
 
-        dist = torch.cdist(batch_state, self.expert_state, p=2)  # (B, N)
+        dist = torch.cdist(batch_state[:,:self.goal_dim], self.expert_state[:,:self.goal_dim], p=2)  # (B, N)
         # 最近k个的索引, shape = (B, k)
         _, nn_idx = torch.topk(dist, k=k, dim=1, largest=False)
 
@@ -64,4 +64,4 @@ class ExpertStore:
         row = torch.arange(bsz, dtype=torch.long)
         chosen = nn_idx[row, pick]
 
-        return self.expert_state[chosen].clone()
+        return self.expert_state[chosen].clone(),chosen
