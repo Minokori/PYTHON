@@ -37,6 +37,7 @@ from modelsolver.implement.optimizer.adamw import (AdamWOptimizer,
                                                    AgentAdamWOptimizer)
 from modelsolver.implement.scheduler.nullstep import (AgentNullScheduler,
                                                       NullScheduler)
+from modelsolver.stat import AgentStatistics
 
 
 # endregion
@@ -349,11 +350,11 @@ class ModelSolver(Container):
             loss_num += len(state_batch)
         return total_loss / loss_num, {}
 
-    def save_model(self, dir: str):
+    def save_model(self, directory: str):
         """保存模型参数到指定文件夹
 
         Args:
-            dir (str): 文件夹名(不需要以`'/'`结尾)
+            directory (str): 文件夹名(不需要以`'/'`结尾)
         """
         paras = self.model.state_dict()
         r = []
@@ -363,7 +364,7 @@ class ModelSolver(Container):
         for k in r:
             del paras[k]
 
-        save(paras, f"{dir}/{self.model.name_for_save}.pth")
+        save(paras, f"{directory}/{self.model.name_for_save}.pth")
 
     def load_model(self, path: str):
         """从指定路径加载模型参数
@@ -442,14 +443,12 @@ class ModelSolver(Container):
 
 
 class AgentModelSolver(ModelSolver):
-
+    """强化学习解决方案"""
     # region environment 相关函数, override 函数签名 (提供类型检查)
     def __init__(self):
         super().__init__()
         # 初始化训练和测试奖励列表
-        self.stats["rewards"] = []
-        self.stats["actor_losses"] = []
-        self.stats["critic_losses"] = []
+        self.stats:AgentStatistics = self._init_stats()
 
 
         # 默认 Actor 和 Critic 的占位符
@@ -653,15 +652,16 @@ class AgentModelSolver(ModelSolver):
 
     @property
     def train_rewards(self) -> list[float]:
-        return self.stats["rewards"]
+        return self.stats["episode_return"]
 
     @property
     def train_actor_losses(self) -> list[float]:
-        return self.stats["actor_losses"]
-
+        # TODO 需要修改以匹配self.stat
+        return self.stats["actor_loss"]
     @property
     def train_critic_losses(self) -> list[float]:
-        return self.stats["critic_losses"]
+        # TODO 需要修改以匹配self.stat
+        return self.stats["critic_loss"]
     # endregion
 
     @no_grad()
@@ -727,11 +727,6 @@ class AgentModelSolver(ModelSolver):
                     while not has_train:
                         has_train = self.train_single_epoch_offline(epoch, method=offline_method)
 
-                    if print_interval > 0 and epoch % print_interval == 0:
-                        if len(self.train_actor_losses) > 0:
-                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], " +
-                                  f"Actor Loss: {self.train_actor_losses[-1]:.4f}, " +
-                                  f"Critic Loss: {self.train_critic_losses[-1]:.4f}")
 
     def train_single_step_through_behavior_cloning(self):
         """使用行为克隆进行单步训练"""
@@ -764,6 +759,9 @@ class AgentModelSolver(ModelSolver):
             q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.abs().cuda())
         # 计算当前的 Q 值
         q = self.model(states.cuda(), actions.cuda(), "q")
+
+        # TDloss
+        td_loss = q-q_target
 
         # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
         critic_loss = self.loss_function(q, q_target, "ddpg_critic")
@@ -804,6 +802,9 @@ class AgentModelSolver(ModelSolver):
         q = self.model(states.cuda(), actions.cuda(), "q")
         q_other = self.model(states.cuda(), actions.cuda(), "q_other")
 
+        td_loss = q - q_target
+        td_other_loss = q_other - q_target
+
         # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
         critic_loss = self.loss_function(q, q_target.detach(), "sac_critic")
         critic_other_loss = self.loss_function(q_other, q_target.detach(), "sac_critic")
@@ -841,9 +842,16 @@ class AgentModelSolver(ModelSolver):
         # endregion
 
         # 记录损失和累计奖励
-        self.train_actor_losses.append(actor_loss.item())
-        self.train_critic_losses.append((critic_loss.item() + critic_other_loss.item()) / 2)
-
+        self.stats["actor_loss"].append(actor_loss.item())
+        self.stats["critic_loss"].append(critic_loss.item())
+        self.stats["critic_other_loss"].append(critic_other_loss.item())
+        self.stats["alpha_loss"].append(alpha_loss.item())
+        self.stats["td_error"].append(td_loss.abs().mean().item())
+        self.stats["td_other_error"].append(td_other_loss.abs().mean().item())
+        self.stats["q_value_mean"].append(q.mean().item())
+        self.stats["q_other_value_mean"].append(q_other.mean().item())
+        self.stats["episode_id"].append(epoch)
+        self.stats["global_env_step"].append(1)
         # 软更新目标网络
         self.model.soft_update_target_net("critic", "critic_other")
 
@@ -903,7 +911,7 @@ class AgentModelSolver(ModelSolver):
 
         # 环境目标替换为教练指导
         # TODO 假如实际state更接近真实目标而不是教练目标怎么办
-        
+
         states[mask,goal_start_idx:] = states_coach[mask,goal_start_idx,:]
         next_states[mask,goal_start_idx:] = states_coach[mask,goal_start_idx,:]
 
@@ -1036,7 +1044,8 @@ class AgentModelSolver(ModelSolver):
                 self.critic_scheduler.step()
                 self.critic_other_scheduler.step()
 
-        self.stats["rewards"].append(total_r.item())
+        self.stats["episode_return"].append(total_r.item())
+        self.stats["success"].append(done.item())
         return True
 
     def train_single_step_through_irl(self):
@@ -1059,14 +1068,41 @@ class AgentModelSolver(ModelSolver):
         pass
 
     @no_grad()
-    def evalute_on_environment(self,):
-        """在环境上评估模型, 绘制模型在环境中的表现"""
+    def evalute_on_environment(self,)->tuple[list[torch.Tensor], float, float]:
+        """在环境上评估模型, 绘制模型在环境中的表现
+
+        Returns:
+            评估结果 (tuple[list[torch.Tensor], float, float]): 状态链, 总回报, 是否成功
+        """
         self.model.eval()
         ob, r, done, timeout, info = self.environment.reset()
         ob_list = []
+        total_reward = r.item()
         timeout = False
         while not done.abs().bool() and not timeout:
             action = self.model(ob.cuda())
             ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
             ob_list.append(ob)
-        return ob_list
+            total_reward += reward.item()
+        return ob_list, total_reward, done.item()
+
+    def _init_stats(self) -> AgentStatistics:
+        return {
+            "actor_loss": [],
+            "critic_loss": [],
+            "critic_other_loss": [],
+            "alpha_loss": [],
+            "alpha": [],
+            "td_error": [],
+            "td_other_error": [],
+            "q_value_mean": [],
+            "q_other_value_mean": [],
+            "episode_id": [],
+            "episode_return": [],
+            "success": [],
+            "eval_mean_return":[],
+                    "eval_std_return":[],
+                    "eval_success_rate":[],
+                    "eval_mean_episode_length":[],
+                    "global_env_step": [],
+                    }
