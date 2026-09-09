@@ -1,3 +1,8 @@
+"""定义模型的接口"""
+# pylint: disable=W2301, C0321
+
+
+#region import
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
@@ -8,11 +13,16 @@ from torch import Tensor, no_grad
 from torch.distributions import Normal
 from torch.nn import Module
 
-from .config import AgentConfig
+from modelsolver.abc.config import AgentConfig
 
+
+#endregion
 
 class IModule(ABC, Module):
-    """模块接口, 定义了模型的基本结构和方法, 包括前向传播和反向传播等"""
+    """模块接口, 定义了模型的基本结构和方法, 包括前向传播和反向传播等
+
+    是对 `torch.nn.Module` 的简单封装, 仅添加了 `TYPE_CHECKING` 下的 `__call__` 方法, 以便类型检查工具能够正确识别参数类型
+    """
 
     if TYPE_CHECKING:
         def forward(self, x: Tensor) -> Tensor:
@@ -27,7 +37,12 @@ class IModule(ABC, Module):
             ...
 
 class IActivateFunction(ABC, Module):
-    """激活函数接口, 定义了前向传播和反向传播方法"""
+    """激活函数接口, 定义了前向传播和反向传播方法
+
+    是对 `torch.nn.Module` 的简单封装, 仅添加了 `TYPE_CHECKING` 下的 `__call__` 方法, 以便类型检查工具能够正确识别参数类型
+
+    + 需要重写 `reverse` 方法, 以便在**逆运算**时能够正确计算
+    """
 
     if TYPE_CHECKING:
         def forward(self, x: Tensor) -> Tensor:
@@ -53,8 +68,14 @@ class IActivateFunction(ABC, Module):
             ...
 
 
+# TODO 移出对 name_for_save.setter 的支持.
 class IModel(ABC, Module):
-    """模型接口
+    """模型接口. 是对整个**模型**的抽象.
+
+
+    需要重写的属性:
+    + `name_for_save`: 模型保存的名称, 用于保存模型.(*需要同时重写setter和getter*)
+
     """
 
     if TYPE_CHECKING:
@@ -88,11 +109,21 @@ class IActor(ABC, Module):
 
     输出的动作取值范围在 [-1, 1] 之间.
 
+    *为兼容 SAC 算法, 输出为动作 a 和 log_prob, 其中 log_prob 是动作 a 的对数概率密度, 用于计算策略的熵.
+    若使用的算法不是 SAC, 则 log_prob 可以忽略.*
+
     ---
-    *需要重载的方法:*
+    需要重载的方法:
     + `_action_mean`
     + `_action_std`
     + `_forward`
+
+
+    ---
+    *内部方法实现*
+    + `forward` 方法, 输入状态 s, 输出动作 a 和 log_prob
+    + `_action_sample` 方法, 从动作分布中采样动作, 并计算该动作的对数概率
+
     """
 
     if TYPE_CHECKING:
@@ -153,7 +184,14 @@ class IActor(ABC, Module):
         return action, log_prob
 
 class ICritic(ABC, Module):
-    """值网络接口"""
+    """值网络接口
+
+    输入 s 和 a, 输出 Q(s,a) 的值.
+
+    需要重载的方法:
+    + `forward`
+    + 重载 `__init__` 方法时, 需要在 `__init__` 中调用 `super().__init__()`
+    """
 
     if TYPE_CHECKING:
         def __call__(self, state: Tensor, action: Tensor) -> Tensor:
@@ -181,7 +219,9 @@ class IAgentModel(IModel):
 
     + 以 Actor-Critic 架构为基础的智能体模型
     + 已经实现的算法: DDPG, BC, SAC, TD3
-    +
+
+    ---
+    *该接口对大部分方法都有了默认实现*
     """
 
     if TYPE_CHECKING:

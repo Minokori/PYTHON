@@ -13,16 +13,21 @@ from numpy import exp2, floor, log2
 @dataclass_json
 @dataclass
 class IConfig:
+    """配置类的基类.
+
+    继承自 dataclass_json, 使得配置类可以方便地进行 JSON 序列化和反序列化.
+    """
     if TYPE_CHECKING:
         def to_json(self, /, ensure_ascii=False, indent=4) -> str:
             """以 JSON 格式返回对象的字符串表示"""
             ...
 
 
+
 # TODO agent hyper config
 @dataclass_json
 @dataclass
-class HyperParameterConfig(IConfig):
+class HyperParameterConfig(IConfig): # pylint: disable=R0902
     """超参数配置"""
     learning_rate: float = 1e-3
     """学习率, 也是 log_alpha 的学习率"""
@@ -73,6 +78,7 @@ class DataConfig:
 @dataclass_json
 @dataclass
 class ReplayBufferConfig:
+    """强化学习经验回放缓冲区配置"""
     capacity: int
     """经验回放缓冲区的容量"""
     state_dim: int
@@ -89,7 +95,7 @@ class ReplayBufferConfig:
 @dataclass_json
 @dataclass
 class AgentHyperParameterConfig(HyperParameterConfig):
-    """超参数配置"""
+    """强化学习智能体超参数配置"""
     gamma_rl: float = 0.98
     """RL 的 奖励衰减系数"""
     actor_lr: float = 3e-4
@@ -101,6 +107,7 @@ class AgentHyperParameterConfig(HyperParameterConfig):
 @dataclass_json
 @dataclass
 class AgentConfig:
+    """强化学习智能体配置"""
     state_channels: int
     action_channels: int
     hidden_channels: int
@@ -115,7 +122,7 @@ class AgentConfig:
 @dataclass_json
 @dataclass
 class EnvironmentConfig(IConfig):
-    """环境配置"""
+    """强化学习环境配置"""
 
     terminated_delta: int = -1
     """是否启用终止状态检测.设置为 >0 的值时, 当连续若干时间步达到数值状态时, 环境将进入终止状态."""

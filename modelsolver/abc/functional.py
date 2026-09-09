@@ -1,4 +1,6 @@
 """定义损失函数, 优化器, 学习率调度器的接口"""
+# pylint: disable=W2301, C0321
+
 # region import
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
@@ -18,7 +20,7 @@ class ILoss(ABC, Module):
     """损失函数
 
     + 需要重写 forward 方法.
-    + 需要在 `__init__` 中调用 `super().__init__()`
+    + 需要在 `__init__` 中调用 `super().__init__()`, 如果重载了 `__init__` 方法
     + 需要重写 TYPE_CHECKING 下的 `__call__` 方法, 以便类型检查工具能够正确识别参数类型
     """
 
@@ -56,11 +58,15 @@ class ILoss(ABC, Module):
 class IOptimizer(ABC):
     """优化器接口.
 
-    + 需要重写 __getitem__ 方法, 以便根据 key 获取对应的子优化器
+    + 需要重写 `__getitem__` 方法, 以便根据 key 获取对应的子优化器
+    + 需要在 `__init__` 中调用 `super().__init__()`, 如果重载了 `__init__` 方法
     """
 
     def __init__(self, model: IModel, config: HyperParameterConfig):
+        self._model = model
+        """优化器要优化的模型 (IModel)"""
         self._config = config
+        """超参数配置 (HyperParameterConfig)"""
 
 
     @property
@@ -102,8 +108,6 @@ class IScheduler(ABC):
         ...
 
 # region RL functions
-
-
 class IAgentLoss(ILoss, ABC):
     """强化学习智能体损失函数接口
 
@@ -113,7 +117,7 @@ class IAgentLoss(ILoss, ABC):
 
     if TYPE_CHECKING:
         def __call__(self,
-                     predicted: Tensor,
+                     predict: Tensor,
                      label: Tensor | None = None,
                      target: str = "actor",
                      **kwargs: Tensor) -> Tensor:
@@ -122,7 +126,7 @@ class IAgentLoss(ILoss, ABC):
             *由于强化学习智能体可能不同的部分需要使用不同的损失函数计算, 因此需要在调用时指定具体的目标*
 
             Args:
-                predicted (Tensor): 预测值
+                predict (Tensor): 预测值
                 label (Tensor | None, optional): 标签值. Defaults to None.
                 target (str, optional): 目标, 指示计算那部分的损失. Defaults to "actor".
                 kwargs (Tensor): 额外的参数.
@@ -133,13 +137,13 @@ class IAgentLoss(ILoss, ABC):
             ...
 
     @abstractmethod
-    def forward(self, predicted: Tensor, label: Tensor | None = None, target: str = "actor", **kwargs: Tensor) -> Tensor:
+    def forward(self, predict: Tensor, label: Tensor | None = None, target: str = "actor", **kwargs: Tensor) -> Tensor:
         """计算损失
 
             *由于强化学习智能体可能不同的部分需要使用不同的损失函数计算, 因此需要在调用时指定具体的目标*
 
             Args:
-                predicted (Tensor): 预测值
+                predict (Tensor): 预测值
                 label (Tensor | None, optional): 标签值. Defaults to None.
                 target (str, optional): 目标, 指示计算那部分的损失. Defaults to "actor".
                 kwargs (Tensor): 额外的参数.
@@ -177,7 +181,7 @@ class IAgentOptimizer(IOptimizer, ABC):
     """智能体优化器接口.
 
     + 需要重写 __getitem__ 方法, 以便根据 key 获取对应的子优化器
-        + key: "actor", "critic", "critic_other", "log_alpha"
+        + 强化学习中常用的 key: "actor", "critic", "critic_other", "log_alpha"
 
     """
 

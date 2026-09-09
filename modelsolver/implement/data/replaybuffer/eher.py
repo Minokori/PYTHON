@@ -3,7 +3,6 @@
 import logging
 from dataclasses import dataclass
 
-import pandas as pd
 import torch
 from dataclasses_json import dataclass_json
 from torch import Tensor, no_grad
@@ -17,7 +16,7 @@ from modelsolver.implement.data.replaybuffer.store.trajectory import \
     TrajectoryStore
 
 
-logging.basicConfig(level=logging.INFO, filename="./eher.log", filemode="w", encoding="utf-8")
+logging.basicConfig(level=logging.INFO, filename=".logs/eher.log", filemode="w", encoding="utf-8")
 @dataclass_json
 @dataclass
 class EHERConfig(HERConfig):
@@ -46,30 +45,30 @@ class ExpertHEReplayBuffer(IReplayBuffer):
 
     def __init__(self, config: ReplayBufferConfig, reward: IReward):
         assert issubclass(type(config), EHERConfig), "HER 经验回放池需要 HEReplayBufferConfig 实例作为配置"
-        open("./eher.log", "w", encoding="utf-8").close()  # 每次初始化时清空日志文件
+        open(".logs/eher.log", "w", encoding="utf-8").close()  # 每次初始化时清空日志文件
         self._config = config
         self._her_reward_fn = reward
 
         self._g_dim = int(self._config.state_dim // 2)
 
+        # TODO 改成DI
         self._store = TrajectoryStore(
             capacity=int(self._config.capacity),
             state_dim=int(self._config.state_dim),
             action_dim=int(self._config.action_dim),
         )
 
-        self._expert_store = ExpertStore(
-            state_info=(self.config.expert_state_col, self.config.state_dim),
-            action_info=(self.config.expert_action_col, self.config.action_dim),
-            df=pd.read_pickle(self.config.expert_data_path))
+        # TODO 改成DI
+        self._expert_store = ExpertStore(config, reward)
 
 
         # 专家数据计算奖励.
         with torch.no_grad():
-            expert_states = self._expert_store.expert_state  # shape = (N, state_dim)
+            expert_states = self._expert_store._expert_state  # shape = (N, state_dim)
             expert_rewards, _ = self._her_reward_fn(next_state = expert_states)
             self.expert_rewards = expert_rewards
 
+    # region properties
     @property
     def config(self) -> EHERConfig:
         return self._config  # type: ignore
@@ -80,7 +79,7 @@ class ExpertHEReplayBuffer(IReplayBuffer):
     @property
     def can_sample(self) -> bool:
         return self._store.size > self._config.minimal_capacity
-
+    # endregion
 
     def append(
         self,
@@ -101,6 +100,8 @@ class ExpertHEReplayBuffer(IReplayBuffer):
     def sample(self, her: bool = True) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         # TODO 代码不报错, 需要检查业务逻辑是否有问题
         # 变量名称: 带 pos 的表示实际物理索引, 带 idx 的表示其他索引.
+
+
         # 基础随机抽样
         pos_now = self._store.sample_postions(self.config.batch_size)  # shape = (batch_size,)
         states_t, actions_t, rewards_t, next_states_t, dones_t = self._store[pos_now]
@@ -109,8 +110,7 @@ class ExpertHEReplayBuffer(IReplayBuffer):
         her_idx = torch.arange(self.config.batch_size)[torch.rand(self.config.batch_size) < self.config.her_p]
 
         # 不采用HER或不满足HER条件时, 直接返回原始采样结果
-        if her_idx.numel() == 0 or not her:
-            return states_t, actions_t, rewards_t, next_states_t, dones_t
+        if her_idx.numel() == 0 or not her: return states_t, actions_t, rewards_t, next_states_t, dones_t  # Pylint: disable=C0321
 
         # HER idx切分: e_idx用于专家重标注, f_idx用于future重标注.
         # 例如: her_idx = [0,2,5,7], expert_p=0.5时, 可能切分结果为 e_idx=[2,7], f_idx=[0,5]

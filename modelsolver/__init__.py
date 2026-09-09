@@ -46,7 +46,14 @@ from modelsolver.stat import AgentStatistics
 
 
 class ModelSolver(Container):
-    """模型解决方案"""
+    """模型解决方案
+
+
+
+    *注意: 该IoC 容器包含两个子容器:*
+    *   _model_builder: 用于构建模型实例
+    *   _dataloader_builder: 用于构建数据加载器
+    """
 
     def __init__(self):
         super().__init__()

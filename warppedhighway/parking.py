@@ -388,4 +388,4 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
     def GOAL(self) -> Tensor:
         return tensor(self.road.objects[0].position)  # type: ignore
 
-__all__ = ["ParkingEnvironment"]
+__all__ = ["ParkingEnvironment","ParkingReward"]

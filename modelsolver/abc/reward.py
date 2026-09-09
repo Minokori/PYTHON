@@ -1,5 +1,7 @@
 """强化学习奖励函数接口"""
+# pylint: disable=W2301
 
+# region imports
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -7,8 +9,15 @@ from torch import Tensor
 from torch.nn import Module
 
 
-class IReward(ABC, Module):
+# endregion
 
+class IReward(ABC, Module):
+    """奖励函数接口.
+
+    需要重写的方法:
+    + `forward` : 计算奖励和是否结束
+    + `is_learnable` : 是否可学习 (IRL 中可能需要学习奖励函数)
+    """
     if TYPE_CHECKING:
         def __call__(self, **kwargs:Tensor) -> tuple[Tensor, Tensor]:
             """计算奖励

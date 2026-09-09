@@ -27,14 +27,24 @@ class IDataset(ABC):
     def __getitem__(self, index: int | list[int] | slice) -> Sequence: ...
     @abstractmethod
     def __len__(self) -> int: ...
-    def __add__(self, other: Self) -> Self: raise NotImplementedError("没有为 IDataset 实现 __add__ 方法")
+    def __add__(self, other: Self) -> Self:
+        raise NotImplementedError("没有为 IDataset 实现 __add__ 方法")
 
 
 class IDataProcesser(ABC):
-    """数据处理器接口"""
+    """数据处理器接口
+
+    需要重写的方法:
+    + `collate_fn` : 传递给 DataLoader 的 `collate_fn` 方法
+    + `preprocess` : 预期接受 Dataloader 的输出, 并进行预处理
+    + `postprocess` : 预期接受 IModel 的输出, 进行后处理, 以便可视化或其他用途
+    """
     @abstractmethod
     def collate_fn(self, batch: Sequence) -> tuple[list[Tensor], list[Tensor]]:
-        """传递给 DataLoader 的 `collate_fn` 方法"""
+        """传递给 DataLoader 的 `collate_fn` 方法.
+
+        期望返回 输入, 目标, 以便于后续的训练和评估.
+        """
 
     @abstractmethod
     def preprocess(self, batch: Sequence, **kwargs) -> tuple[Tensor, ...]:
@@ -53,7 +63,7 @@ class IDataProcesser(ABC):
 
 
 class IDataLoader(DataLoader):
-    """对 `torch.utils.data.DataLoader` 的封装. *添加了类型注解防止报错*"""
+    """对 `torch.utils.data.DataLoader` 的封装. (*仅添加了类型注解防止报错*)"""
     if TYPE_CHECKING:
         def __iter__(self) -> Iterator[tuple[Tensor, ...]]: ...
         def __next__(self) -> tuple[Tensor, ...]: ...
@@ -62,6 +72,18 @@ class IDataLoader(DataLoader):
 # region 强化学习相关接口
 class IReplayBuffer(IDataset, ABC):
     """经验回放池接口
+
+    需要重写的方法:
+    + `__init__` : 构造函数, 接受 ReplayBufferConfig 作为参数
+    + `__add__` (可选) : 合并两个经验回放池
+    + `__len__` : 返回当前池中存储的**序列**数
+    + `__getitem__` : 根据索引返回状态转移链条 `(s,a,r,s',done)`
+    + `append` : 向池中添加一条序列 `(s,a,r,s')`
+    + `sample` : 从经验回放池中随机采样一批数据
+    需要重写的属性:
+    + `can_sample` : 是否可以从池中采样
+    + `config` : 经验回放池的配置
+
     """
     @property
     def config(self) -> ReplayBufferConfig:...
@@ -125,4 +147,39 @@ class IReplayBuffer(IDataset, ABC):
         """
         ...
 
+
+
+class IExpertStore(ABC):
+    """专家数据存储接口
+
+    仅负责:
+    1) 接收 DataFrame(state/action)
+    2) 构建tensor缓存
+    3) 按当前state_part做top-k最近邻goal采样
+
+    需要重写:
+    + `__init__` : 构造函数, 接受 ReplayBufferConfig 作为参数
+    + `sample_expert_states` : 对batch中每个当前state, 找到expert中最近的top-k, 在top-k中随机选1个goal
+    """
+    @abstractmethod
+    def __init__(self, config:ReplayBufferConfig) -> None:...
+
+    @property
+    def config(self) -> ReplayBufferConfig:...
+
+
+    @abstractmethod
+    def sample_expert_states(self, batch_state: Tensor, topk: int) -> tuple[Tensor, Tensor]:
+        """对batch中每个当前state:
+        - 找到expert中最近的top-k
+        - 在top-k中随机选1个goal
+
+        Args:
+            batch_state (Tensor): 传入的状态，shape = (B, S)
+            topk (int): 每个输入状态对应的最近邻专家状态数量.
+
+        Returns:
+            expert_ob (Tensor): 采样到的专家观测, shape = (B, S/2)
+            chosen_indices (Tensor): 被选中的专家状态的索引, shape = (B,)
+        """
 # endregion

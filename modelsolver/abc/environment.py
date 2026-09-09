@@ -1,4 +1,5 @@
 """环境模块, 定义了环境接口, 包括强化学习环境接口"""
+# region imports
 from abc import ABC, abstractmethod
 
 from torch import Tensor
@@ -7,18 +8,23 @@ from modelsolver.abc.config import EnvironmentConfig
 from modelsolver.abc.reward import IReward
 
 
+# endregion
+
 # TODO step 返回的state包含goal, 方便HER算法的实现
 # TODO 抽象出一个IReward接口.
 
 
 class IEnvironment(ABC):
-
-
     """包装环境的接口.
 
-    + 需要重写环境的 `reset` 和 `step` 方法, 使其返回相同的数据结构, 并且数据类型为 `Tensor.cpu()`
-    + 需要重写环境的 `step` 方法, 使其接受类型为 `Tensor` 的动作
+    需要重写的方法:
+    + `__init__`: 接受 `EnvironmentConfig` 和 `IReward` 作为参数
+    + `reset`: 重置环境, 返回初始状态
+    + `step`: 执行动作, 返回环境交互信息
 
+    需要重写的属性:
+    + `ZERO_ACTION`: 环境的零动作, 用于经验回放池预热等场景
+    + `GOAL`: 环境的目标状态, 用于HER等算法
     ---
 
     依赖:

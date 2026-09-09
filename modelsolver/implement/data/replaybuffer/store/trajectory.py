@@ -53,6 +53,14 @@ class TrajectoryStore:
 
 
     def __getitem__(self, index:int|slice|Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """索引状态转移链
+
+        Args:
+            index (int | slice | Tensor): 索引
+
+        Returns:
+            状态转移链 (tuple[Tensor, Tensor, Tensor, Tensor, Tensor]): 状态、动作、奖励、下一个状态、终止标志 , shape = (batch, channel)
+        """
         return (
             self._states[index].clone().reshape(-1,self._state_dim),
             self._actions[index].clone().reshape(-1,self._action_dim),
