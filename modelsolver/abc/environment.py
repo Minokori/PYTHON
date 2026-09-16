@@ -48,9 +48,15 @@ class IEnvironment(ABC):
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
         """执行一步环境交互, 返回 (observation, reward, terminated, truncated, info).cpu().
 
-        + observation: 环境的观测状态, 包含 **当前状态** 和 **目标状态**, 用于HER等算法的实现. 预期得到 Tensor.cpu(), shape = (obs_dim).
+        + observation: 环境的观测状态, 包含 **当前状态** 和 **目标状态**, 用于HER等算法的实现. 预期得到 Tensor.cpu(), shape = (1, obs_dim).
 
-            *举例: 如果一个环境返回智能体的位置(x,y)作为观测, 那么 observation 应该为 (x,y, x_goal, y_goal)*
+            + *举例: 如果一个环境返回智能体的位置(x,y)作为观测, 那么 observation 应该为 (x,y, x_goal, y_goal)*
+
+            + 返回的状态应已经进行了*标准化*处理, 缩放至 [-1,1] 或 [0,1] 范围内.
+
+            + *假如环境的原始观测形状为 (1, obs_dim1, obs_dim2), 在拼接 goal 时, 应注意拼接顺序,
+            以免在 flatten() 时出现错误*
+
         + reward: 环境的奖励, 预期得到 Tensor.cpu(), shape = (1,).
         + terminated(done): 环境是否终止, 预期得到 Tensor.cpu(), shape = (1,).
 

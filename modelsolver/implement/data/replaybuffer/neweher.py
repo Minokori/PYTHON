@@ -8,15 +8,14 @@ from dataclasses_json import dataclass_json
 from torch import Tensor, no_grad
 
 from modelsolver.abc.config import ReplayBufferConfig
-from modelsolver.abc.data import IReplayBuffer
+from modelsolver.abc.data import IExpertStore, IReplayBuffer
 from modelsolver.abc.reward import IReward
 from modelsolver.implement.data.replaybuffer.hereplaybuffer import HERConfig
-from modelsolver.implement.data.replaybuffer.store.expert import ExpertStore
 from modelsolver.implement.data.replaybuffer.store.trajectory import \
     TrajectoryStore
 
 
-logging.basicConfig(level=logging.INFO, filename=".logs/eher.log", filemode="w", encoding="utf-8")
+logging.basicConfig(level=logging.INFO, filename="./logs/eher.log", filemode="w", encoding="utf-8")
 @dataclass_json
 @dataclass
 class EHERConfig(HERConfig):
@@ -46,12 +45,13 @@ class ExpertHEReplayBuffer(IReplayBuffer):
     def __init__(self,
                  config: ReplayBufferConfig,
                  reward: IReward,
+                 expert_store:IExpertStore
                  ):
         assert issubclass(type(config), EHERConfig), "HER 经验回放池需要 HEReplayBufferConfig 实例作为配置"
-        open(".logs/eher.log", "w", encoding="utf-8").close()  # 每次初始化时清空日志文件
+        open("./logs/eher.log", "w", encoding="utf-8").close()  # 每次初始化时清空日志文件
         self._config = config
         self._her_reward_fn = reward
-
+        self._expert_store = expert_store
         self._g_dim = int(self._config.state_dim // 2)
 
         # TODO 改成DI
@@ -60,16 +60,6 @@ class ExpertHEReplayBuffer(IReplayBuffer):
             state_dim=int(self._config.state_dim),
             action_dim=int(self._config.action_dim),
         )
-
-        # TODO 改成DI
-        self._expert_store = ExpertStore(config, reward)
-
-
-        # 专家数据计算奖励.
-        with torch.no_grad():
-            expert_states = self._expert_store._expert_state  # shape = (N, state_dim)
-            expert_rewards, _ = self._her_reward_fn(next_state = expert_states)
-            self.expert_rewards = expert_rewards
 
     # region properties
     @property
@@ -101,9 +91,6 @@ class ExpertHEReplayBuffer(IReplayBuffer):
 
     @no_grad
     def sample(self, her: bool = True) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        # TODO 代码不报错, 需要检查业务逻辑是否有问题
-        # 变量名称: 带 pos 的表示实际物理索引, 带 idx 的表示其他索引.
-
 
         # 基础随机抽样
         pos_now = self._store.sample_postions(self.config.batch_size)  # shape = (batch_size,)
@@ -113,7 +100,7 @@ class ExpertHEReplayBuffer(IReplayBuffer):
         her_idx = torch.arange(self.config.batch_size)[torch.rand(self.config.batch_size) < self.config.her_p]
 
         # 不采用HER或不满足HER条件时, 直接返回原始采样结果
-        if her_idx.numel() == 0 or not her: return states_t, actions_t, rewards_t, next_states_t, dones_t  # Pylint: disable=C0321
+        if her_idx.numel() == 0 or not her: return states_t, actions_t, rewards_t, next_states_t, dones_t  # pylint: disable=C0321
 
         # HER idx切分: e_idx用于专家重标注, f_idx用于future重标注.
         # 例如: her_idx = [0,2,5,7], expert_p=0.5时, 可能切分结果为 e_idx=[2,7], f_idx=[0,5]
@@ -126,23 +113,18 @@ class ExpertHEReplayBuffer(IReplayBuffer):
         next_states_t[f_idx, self.config.goal_index:] = future_ob
 
         # 从专家数据抽取HER样本
-        expert_state, pos_expert = self._expert_store.sample_expert_states(states_t[e_idx],self.config.expert_topk)
-
-        #  阈值过滤: 仅保留距离当前状态较近的专家goal
-        ok = self._select_valid_expert_goals(states_t[e_idx], expert_state, pos_expert)
-        e_idx = e_idx[ok]
+        expert_state, _ = self._expert_store.sample_expert_states(states_t[e_idx],self.config.expert_topk)
 
         if e_idx.numel() > 0:
             states_t[e_idx, self.config.goal_index:] = expert_state[:,:self.config.goal_index]
             next_states_t[e_idx, self.config.goal_index:] = expert_state[:,:self.config.goal_index]
-
         # 重算HER命中样本的reward/done
-        rew_new, done_new = self._her_reward_fn(
+        reward_new, done_new = self._her_reward_fn(
             state=states_t[her_idx],
             action=actions_t[her_idx],
             next_state=next_states_t[her_idx],
         )
-        rewards_t[her_idx] = rew_new
+        rewards_t[her_idx] = reward_new
         dones_t[her_idx] = done_new
 
         return states_t, actions_t, rewards_t, next_states_t, dones_t
@@ -161,30 +143,3 @@ class ExpertHEReplayBuffer(IReplayBuffer):
         expert_local = torch.nonzero(mask_expert, as_tuple=False).flatten()
         future_local = torch.nonzero(~mask_expert, as_tuple=False).flatten()
         return her_idx[expert_local], her_idx[future_local]
-
-    def _select_valid_expert_goals(self, ob: Tensor, goals_ob: Tensor, chosen_indices: Tensor) -> Tensor:
-        """选择哪些专家goal是合适的(距离当前状态较近)
-
-        Args:
-            ob (Tensor): 传入的 ob
-            goals_ob (Tensor): 对应的专家 ob
-            chosen_indices (Tensor): 被选中的专家状态的索引, shape = (B,)
-
-        Returns:
-            是否合理 (Tensor): shape = (N_ob,1), bool
-        """
-        if self.config.max_expert_goal_dist >0:
-            dist = torch.norm(ob[:, :self.config.goal_index] - goals_ob, dim=1)
-            ok = dist <= self.config.max_expert_goal_dist
-        else:
-            ok = torch.ones((goals_ob.shape[0],), dtype=torch.bool)
-
-        ob_reward,_ = self._her_reward_fn(next_state=goals_ob)
-        e_reward = self.expert_rewards[chosen_indices]
-
-        ok2 = (ob_reward <= e_reward + 1e-3).reshape(-1)  # 仅当专家reward更优时才使用专家goal
-
-        ok_final = ok & ok2
-
-        # ok : 合适的专家goal布尔索引 (在 goals_e 里的索引), shape = (num_expert_goals,)
-        return ok_final

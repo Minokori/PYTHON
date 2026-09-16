@@ -13,6 +13,7 @@ from clean_ioc.registration_filters import with_name
 from matplotlib import pyplot as plt
 from matplotlib.font_manager import FontProperties
 from numpy import mean
+from rich.traceback import install
 from torch import load, no_grad, save
 from torch.autograd import set_detect_anomaly
 from torch.nn.utils import clip_grad_norm_
@@ -20,10 +21,10 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, random_split
 
-from modelsolver.abc.config import (AgentConfig, DataConfig,
+from modelsolver.abc.config import (AgentConfig, DataConfig, EnvironmentConfig,
                                     HyperParameterConfig, ReplayBufferConfig)
 from modelsolver.abc.data import (IDataLoader, IDataProcesser, IDataset,
-                                  IReplayBuffer)
+                                  IExpertStore, IReplayBuffer)
 from modelsolver.abc.environment import IEnvironment
 from modelsolver.abc.functional import (IAgentLoss, IAgentOptimizer,
                                         IAgentScheduler, ILoss, IOptimizer,
@@ -143,8 +144,21 @@ class ModelSolver(Container):
     # endregion
 
     # region 注册数据来源
-    def add_dataset(self, dataset: type[IDataset]):
+    def add_dataset(self, dataset: type[IDataset], with_config: DataConfig | None = None, witg_data_processer: type[IDataProcesser] | None = None):
+        """注册数据来源. 在模仿学习等需要数据集的训练过程需要
+
+        Args:
+            dataset (type[IDataset]): 数据集
+            with_config (DataConfig | None, optional): 数据集配置. Defaults to None.
+            witg_data_processer (type[IDataProcesser] | None, optional): 数据集的处理函数类. Defaults to None.
+
+        *`with_config`* 和 *`witg_data_processer`* 是可选参数, 当一个训练过程中这些参数/组件是固定的, 可以在这里注册. 否则, 可以在训练过程中动态传入.
+        """
         self._dataloader_builder.register(IDataset, dataset, lifespan=Lifespan.singleton)
+        if with_config:
+            self.add_data_config(with_config)
+        if witg_data_processer:
+            self.add_data_processer(witg_data_processer)
         return self
 
     def add_data_config(self, config: DataConfig):
@@ -247,6 +261,12 @@ class ModelSolver(Container):
     def test_losses(self) -> list[float]:
         return self.stats["test_loss"]
     # endregion
+
+    def suppress_traceback(self, *globs:str|None)->Self:
+        """启用 pytorch 的 traceback 功能, 以便在训练过程中定位错误"""
+        if globs:
+            install(suppress=[g for g in globs if g is not None])
+        return self
 
     def _init_stats(self) -> dict[str, list[float]]:
         return {
@@ -526,21 +546,27 @@ class AgentModelSolver(ModelSolver):
             environment_config (dataclass): dataclass类的环境配置实例
         """
         assert is_dataclass(environment_config), "config must be a dataclass"
-        self.register(type(environment_config), instance=environment_config, lifespan=Lifespan.singleton)
+        assert issubclass(type(environment_config), EnvironmentConfig), "config must be a subclass of EnvironmentConfig"
+        self.register(EnvironmentConfig, instance=environment_config, lifespan=Lifespan.singleton)
         return self
-
-
-    def add_environment(self, environment: IEnvironment | type[IEnvironment]) -> Self:
+    def add_environment(self, environment: IEnvironment | type[IEnvironment], with_config: Any | None = None) -> Self:
         """注册 RL 环境
 
         Args:
             environment (IEnvironment | type[IEnvironment]): IEnviroment 的实现类或者实例
+            with_config (Any | None, optional): 环境配置. Defaults to None.
+
+        Remarks:
+            *如果环境的配置始终固定, 可以在此注册以简化语法. 和调用 `add_environment_config` 的效果相同.*
         """
         match environment:
             case type():
                 self.register(IEnvironment, implementation_type=environment, lifespan=Lifespan.singleton)
             case IEnvironment():
                 self.register(IEnvironment, instance=environment, lifespan=Lifespan.singleton)
+
+        if with_config:
+            self.add_environment_config(with_config)
         return self
 
     def add_replay_buffer_config(self, config: ReplayBufferConfig)->Self:
@@ -552,17 +578,29 @@ class AgentModelSolver(ModelSolver):
         assert is_dataclass(config), "config must be a dataclass"
         self.register(ReplayBufferConfig, instance=config, lifespan=Lifespan.singleton)
         return self
-    def add_replay_buffer(self, buffer: IReplayBuffer | type[IReplayBuffer]) -> Self:
+    def add_replay_buffer(self, buffer: IReplayBuffer | type[IReplayBuffer], with_: type[IExpertStore] |IExpertStore|None = None ) -> Self:
         """注册经验回放池
 
         Args:
             buffer (IReplayBuffer | type[IReplayBuffer]): IReplayBuffer 的类或者实例
+            with_ (type[IExpertStore] | IExpertStore | None, optional): 专家数据存储器. Defaults to None.
         """
         match buffer:
             case type():
                 self.register(IReplayBuffer, implementation_type=buffer, lifespan=Lifespan.singleton)
             case IReplayBuffer():
                 self.register(IReplayBuffer, instance=buffer, lifespan=Lifespan.singleton)
+        if with_:
+            match with_:
+                case type():
+                    self.register(IExpertStore, implementation_type=with_, lifespan=Lifespan.singleton)
+                case IExpertStore():
+                    self.register(IExpertStore, instance=with_, lifespan=Lifespan.singleton)
+        else:
+            # TODO 原来的 eher/her 不需要 with_, 记得修改
+            print("没有注册 ExpertStore, 可能会导致训练失败, 请确保已经注册 ExpertStore 或者使用 add_replay_buffer(buffer, with_=ExpertStore) 注册")
+
+
         return self
 
     def add_reward(self, reward: IReward | type[IReward]) -> Self:
@@ -733,6 +771,8 @@ class AgentModelSolver(ModelSolver):
                     has_train = False
                     while not has_train:
                         has_train = self.train_single_epoch_offline(epoch, method=offline_method)
+                    if print_interval > 0 and epoch % print_interval == 0:
+                                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
 
 
     def train_single_step_through_behavior_cloning(self):

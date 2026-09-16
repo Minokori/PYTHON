@@ -15,9 +15,9 @@ from numpy import bool_, float32
 from numpy.typing import NDArray
 from torch import Tensor, concatenate, from_numpy, no_grad, tensor
 
+from highway_extension.config import RoadNetworkModel
 from modelsolver.abc.environment import IEnvironment
 from modelsolver.abc.reward import IReward
-from warppedhighway.config import RoadNetworkModel
 
 
 logging.basicConfig(level=logging.DEBUG, filename="parking.log", filemode="w", encoding="utf-8")
@@ -86,6 +86,8 @@ class ParkingEnvironmentConfig(TypedDict):
     """环境中其他车辆的数量"""
     add_walls: bool
     """是否添加墙壁作为障碍物"""
+    neighbour_vehicles_connected_lanes: bool
+    """是否将邻近车辆连接到车道上"""
 
 
 class ObservationDict(TypedDict):
@@ -246,7 +248,8 @@ class ParkingEnvironment(IEnvironment, ParkingEnv):
         "duration": 100,
         "controlled_vehicles": 1,
         "vehicles_count": 0,
-        "add_walls": False
+        "add_walls": False,
+        "neighbour_vehicles_connected_lanes":True
     }
 
     @classmethod
