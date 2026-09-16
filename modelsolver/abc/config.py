@@ -117,6 +117,12 @@ class AgentConfig:
     """是否学习温度参数 alpha"""
     alpha:float = 0.01
     """温度参数 alpha 的初始值"""
+    target_noise: float = 0.2
+    """TD3 target policy smoothing σ"""
+    target_noise_clip: float = 0.5
+    """TD3 噪声 clip c"""
+    exploration_noise: float = 0.1
+    """DDPG/TD3 采样阶段高斯探索噪声 σ（可选）"""
 
 
 @dataclass_json

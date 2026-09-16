@@ -46,8 +46,8 @@ class AgentStatistics(TypedDict):
 
     eval_mean_episode_length:list[float]
     """评估的平均 episode 长度"""
-    global_env_step:list[int]
-    """全局环境交互步数"""
+    backward:list[int]
+    """反向传播次数/模型优化次数"""
 
 
 

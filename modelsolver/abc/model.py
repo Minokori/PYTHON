@@ -127,11 +127,12 @@ class IActor(ABC, Module):
     """
 
     if TYPE_CHECKING:
-        def __call__(self, state: Tensor) -> tuple[Tensor, ...]:
+        def __call__(self, state: Tensor, **kwargs:Any) -> tuple[Tensor, ...]:
             """前向传播
 
             Args:
                 state (Tensor): 状态 s
+                kwargs: 其他参数, 由具体实现决定
 
             Returns:
                 动作&log_prob (Tensor): 动作 a 和 log_prob
@@ -160,9 +161,12 @@ class IActor(ABC, Module):
         """
         ...
 
-    def forward(self, state: Tensor) -> tuple[Tensor, ...]:
+    def forward(self, state: Tensor, **kwargs:Any) -> tuple[Tensor, ...]:
         """前向传播, 输入状态 s, 输出动作 a, 以及动作的对数概率 log_prob"""
         x = self._forward(state)
+        if "deterministic" in kwargs and kwargs["deterministic"] is True: # DDPG/TD3 等算法需要确定性动作, 即不采样, 直接使用均值作为动作
+            action_mean = self._action_mean(x)
+            return torch.tanh(action_mean), torch.zeros_like(action_mean)
         action_mean, action_std = self._action_mean(x), self._action_std(x)
         action, log_prob = self._action_sample(action_mean, action_std)
         return action, log_prob
@@ -229,10 +233,11 @@ class IAgentModel(IModel):
                      state: Tensor,
                      action: Tensor | None = None,
                      output: Literal["action",
+                                     "action_deterministic",
                                      "target_action",
                                      "action_with_log_prob",
                                      "q", "q_other",
-                                     "target_q",
+                                     "target_q_ddpg",
                                      "target_q_sac",
                                      "target_q_td3"] = "action", ** kwargs) -> Tensor:
             """
@@ -243,7 +248,7 @@ class IAgentModel(IModel):
             Args:
                 state (Tensor): 状态 s
                 action (Tensor | None, optional): 动作 a. Defaults to None.
-                output (Literal[&quot;action&quot;, &quot;target_action&quot;, &quot;q&quot;, &quot;target_q&quot;], optional): 计算目标. Defaults to "action".
+                output (Literal[&quot;action&quot;, &quot;target_action&quot;, &quot;q&quot;, &quot;target_q_ddpg&quot;], optional): 计算目标. Defaults to "action".
 
             Returns:
                 期望Q或者动作A (Tensor): q 或者 a
@@ -281,7 +286,7 @@ class IAgentModel(IModel):
         self.init_target_nets()
 
         # SAC 需要的 参数
-        self.log_alpha = torch.tensor(log(config.alpha), requires_grad=True, dtype=torch.float32)
+        self.log_alpha = torch.nn.Parameter(torch.tensor(log(config.alpha), requires_grad=True, dtype=torch.float32))
 
     @property
     def config(self) -> AgentConfig:
@@ -321,45 +326,73 @@ class IAgentModel(IModel):
                 output: str = "action") -> Tensor | tuple[Tensor, ...]:
         match output:
             # Actions
-            case "action":
+            case "action": # SAC
                 return self._compute_action(states)
+            case "action_deterministic":  # DDPG/TD3
+                return self._compute_action(states, deterministic=True)
             case "action_with_log_prob":
                 return self._compute_action_log_prob(states)
             case "target_action":
                 return self._compute_action_with_target_net(states)
+            case "target_action_deterministic":
+                return self._compute_action_with_target_net(states, deterministic=True)
+
 
             # Q values
             case "q":
                 return self._compute_q(states, actions)
             case "q_other":
                 return self._compute_q_other(states, actions)
-            case "target_q":
+            case "target_q_ddpg":
                 return self._compute_q_with_target_net(states, actions)
             case "target_q_sac":
                 return self._compute_q_with_target_net_by_sac(states, actions)
             case "target_q_td3":
                 return self._compute_q_with_target_net_by_td3(states, actions)
             case _:
-                raise ValueError("output must be 'action', 'target_action', 'q' or 'target_q'")
+                raise ValueError("output must be 'action', 'target_action', 'q' or 'target_q_ddpg'")
 
-    def _compute_action(self, states: Tensor) -> Tensor:
-        """使用 actor 计算动作 a"""
-        action, _ = self.actor(states)
-        return action
+    def _compute_action(self, states: Tensor, deterministic: bool = False) -> Tensor:
+        """使用 actor 计算动作 a
+
+        Args:
+            deterministic (bool, optional): 是否使用确定性动作. Defaults to False. 当算法为 DDPG/TD3 时, 需要使用确定性动作, 即不采样, 直接使用均值作为动作. 当算法为 SAC 时, 需要使用采样动作, 即使用均值和标准差采样动作.
+        """
+        match deterministic:
+            case True:  # DDPG/TD3
+                action_mean, _ = self.actor(states, deterministic=True)
+                return action_mean
+            case False: # SAC
+                action, _ = self.actor(states)
+                return action
 
     def _compute_action_log_prob(self, states: Tensor) -> tuple[Tensor, Tensor]:
         """使用 actor 计算动作 a 及其对数概率 log_prob"""
         action, log_prob = self.actor(states)
         return action, log_prob
 
-    def _compute_action_with_target_net(self, states: Tensor) -> Tensor:
-        """使用 target actor 计算动作 a"""
-        action, _ = self.target_actor(states)
-        return action
+    def _compute_action_with_target_net(self, states: Tensor, deterministic: bool = False) -> Tensor:
+        """使用 target actor 计算动作 a
+
+        Args:
+            deterministic (bool, optional): 是否使用确定性动作. Defaults to False. 当算法为 DDPG/TD3 时, 需要使用确定性动作, 即不采样, 直接使用均值作为动作. 当算法为 SAC 时, 需要使用采样动作, 即使用均值和标准差采样动作.
+        """
+        match deterministic:
+            case True:  # DDPG/TD3
+                action_mean, _ = self.target_actor(states, deterministic=True)
+                return action_mean
+            case False: # SAC
+                action, _ = self.target_actor(states)
+                return action
+
 
     def _compute_q_with_target_net(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
-        """使用 target critic 计算 q 值, 若 actions 为空, 则使用 target actor 计算动作"""
-        actions = actions if actions is not None else self._compute_action_with_target_net(states)
+        """使用 target critic 计算 q 值, 若 actions 为空, 则使用 target actor 计算动作
+
+        *DDPG 算法使用*
+        """
+        # DDPG target: y = r + γ Q'(s', μ'(s'))
+        actions = actions if actions is not None else self._compute_action_with_target_net(states, deterministic=True)
         q = self.target_critic(states, actions)
         return q
 
@@ -385,11 +418,15 @@ class IAgentModel(IModel):
         return torch.min(target_q_1, target_q_2) - self.log_alpha.exp() * log_probs
 
     def _compute_q_with_target_net_by_td3(self, states: Tensor, actions: Tensor | None = None) -> Tensor:
-        """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作. 该方法适用于 SAC 算法"""
-        assert actions is None, "SAC 计算 target Q 时, 不允许传入 actions, 必须使用 actor 计算动作"
-        actions, log_probs = self.target_actor(states)
-        target_q_1 = self.target_critic(states, actions)
-        target_q_2 = self.other_target_critic(states, actions)
+        """使用 critic 计算 q 值. 若 actions 为空, 则使用 actor 计算动作. 该方法适用于 TD3 算法"""
+        # TD3 target action: μ'(s') + clip(ε, -c, c), ε ~ N(0, σ), 再 clip 到 [-1,1]
+        assert actions is None, "TD3 计算 target Q 时, 不允许传入 actions, 必须使用 actor 计算动作"
+        actions, _ = self.target_actor(states, deterministic=True)
+        noise = (torch.randn_like(actions) * self.config.target_noise
+             ).clamp(-self.config.target_noise_clip, self.config.target_noise_clip)
+        smoothed_action = (actions + noise).clamp(-1.0, 1.0)
+        target_q_1 = self.target_critic(states, smoothed_action)
+        target_q_2 = self.other_target_critic(states, smoothed_action)
 
         return torch.min(target_q_1, target_q_2)
 #endregion

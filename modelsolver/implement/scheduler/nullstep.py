@@ -1,4 +1,4 @@
-from torch.optim.lr_scheduler import LRScheduler, LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 
 from modelsolver.abc.config import HyperParameterConfig
 from modelsolver.abc.functional import (IAgentOptimizer, IAgentScheduler,
@@ -10,7 +10,7 @@ class NullScheduler(IScheduler):
 
     def __init__(self, config: HyperParameterConfig, optimizer: IOptimizer):
         self._config = config
-        self._scheduler = LambdaLR(optimizer=optimizer["all"], lr_lambda=lambda epoch: self.config.learning_rate)
+        self._scheduler = LambdaLR(optimizer=optimizer["all"], lr_lambda=lambda epoch: 1.0)  # 恒定学习率
 
     @property
     def config(self) -> HyperParameterConfig:

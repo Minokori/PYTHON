@@ -458,7 +458,6 @@ class ModelSolver(Container):
                     else:
                         plt.show()
                     count += 1
-                    count += 1
 
     def plot_losses(self,):
         x = [i + 1 for i in range(self.config.epoch)]  # type: ignore
@@ -596,9 +595,6 @@ class AgentModelSolver(ModelSolver):
                     self.register(IExpertStore, implementation_type=with_, lifespan=Lifespan.singleton)
                 case IExpertStore():
                     self.register(IExpertStore, instance=with_, lifespan=Lifespan.singleton)
-        else:
-            # TODO 原来的 eher/her 不需要 with_, 记得修改
-            print("没有注册 ExpertStore, 可能会导致训练失败, 请确保已经注册 ExpertStore 或者使用 add_replay_buffer(buffer, with_=ExpertStore) 注册")
 
 
         return self
@@ -621,9 +617,7 @@ class AgentModelSolver(ModelSolver):
         if self.has_registration(IEnvironment):
             return self.resolve(IEnvironment)
         else:
-            environment = self.resolve(IEnvironment)
-            self.register(IEnvironment, instance=environment)
-            return environment
+            raise ValueError("没有注册环境, 请使用 add_environment 注册环境")
 
     @property
     def model(self) -> IAgentModel:
@@ -802,13 +796,12 @@ class AgentModelSolver(ModelSolver):
         # region 训练 Critic 网络
         # 计算 t+1 时的 目标 Q 值
         with no_grad():
-            q_next = self.model(next_states.cuda(), None, "target_q")
+            q_next = self.model(next_states.cuda(), None, "target_q_ddpg")
             q_target = rewards.cuda() + self.config.gamma_rl * q_next * (1 - dones.abs().cuda())
         # 计算当前的 Q 值
         q = self.model(states.cuda(), actions.cuda(), "q")
-
         # TDloss
-        td_loss = q-q_target
+        # td_loss = q-q_target
 
         # 计算 Critic 损失并更新参数 (减小 Q 和 Q_target 的差异)
         critic_loss = self.loss_function(q, q_target, "ddpg_critic")
@@ -818,10 +811,9 @@ class AgentModelSolver(ModelSolver):
         # endregion
 
         # region 训练 Actor 网络
-        # 计算当前的 Q 值
-        q = self.model(states.cuda(), None, "q")
-        # 计算 Actor 损失并更新参数 (最大化Q)
-        actor_loss = self.loss_function(q, None, target="ddpg_actor")
+        mu = self.model(states.cuda(), None, "action_deterministic")
+        q_pi =  self.model(states.cuda(), mu, "q")
+        actor_loss = self.loss_function(q_pi, None, target="ddpg_actor")
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
@@ -892,13 +884,16 @@ class AgentModelSolver(ModelSolver):
         self.stats["actor_loss"].append(actor_loss.item())
         self.stats["critic_loss"].append(critic_loss.item())
         self.stats["critic_other_loss"].append(critic_other_loss.item())
-        self.stats["alpha_loss"].append(alpha_loss.item())
+
         self.stats["td_error"].append(td_loss.abs().mean().item())
         self.stats["td_other_error"].append(td_other_loss.abs().mean().item())
         self.stats["q_value_mean"].append(q.mean().item())
         self.stats["q_other_value_mean"].append(q_other.mean().item())
         self.stats["episode_id"].append(epoch)
-        self.stats["global_env_step"].append(1)
+        self.stats["backward"].append(1)
+        if self.model.config.alpha_learnable:
+            self.stats["alpha_loss"].append(alpha_loss.item())
+            self.stats["alpha"].append(self.model.log_alpha.exp().item())
         # 软更新目标网络
         self.model.soft_update_target_net("critic", "critic_other")
 
@@ -929,7 +924,8 @@ class AgentModelSolver(ModelSolver):
         self.critic_other_optimizer.step()
 
         if delta % self.config.policy_delay == 0:
-            q = torch.min(self.model(states.cuda(), None, "q"), self.model(states.cuda(), None, "q_other"))
+            mu = self.model(states.cuda(), None, "action_deterministic")
+            q = torch.min(self.model(states.cuda(), mu, "q"), self.model(states.cuda(), mu, "q_other"))
             actor_loss = self.loss_function(q, None, target="ddpg_actor")
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
@@ -1050,7 +1046,13 @@ class AgentModelSolver(ModelSolver):
 
             # 与环境交互1步
             with no_grad():
-                action = self.model(state.cuda(), None, "action")
+                match method:
+                    case "sac":
+                        action = self.model(state.cuda(), None, "action")
+                    case "ddpg" | "td3":
+                        mu = self.model(state.cuda(), None, "action_deterministic")
+                        action = mu + torch.randn_like(mu) * self.model.config.exploration_noise
+                        action = torch.clamp(action, -1, 1)
                 next_state, reward, done, timeout, info = self.environment.step(action.cpu())
                 self.replay_buffer.append(state, action.cpu().detach(), reward, next_state, done)
                 state = next_state
@@ -1151,5 +1153,5 @@ class AgentModelSolver(ModelSolver):
                     "eval_std_return":[],
                     "eval_success_rate":[],
                     "eval_mean_episode_length":[],
-                    "global_env_step": [],
+                    "backward": [],
                     }

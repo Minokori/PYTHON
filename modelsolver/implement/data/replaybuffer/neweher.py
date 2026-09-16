@@ -71,7 +71,7 @@ class ExpertHEReplayBuffer(IReplayBuffer):
 
     @property
     def can_sample(self) -> bool:
-        return self._store.size > self._config.minimal_capacity
+        return self._store.size >= self._config.minimal_capacity
     # endregion
 
     def append(
