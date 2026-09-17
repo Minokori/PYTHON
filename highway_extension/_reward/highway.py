@@ -17,19 +17,6 @@ class HighwayReward(IReward):
     由 和*周边车辆*的状态差异 和 *自车*状态相较于*任务目标*的差异 两部分相加得到.
     """
     # region constants
-    _B = Tensor([0,0, 9000, 3066.57-3.70, 0, 0, 0])
-    """
-    标准化输入时用的偏移量
-
-    [速度,航向角, x, y,  加速度x, 加速度y, lane] 的最小值
-    """
-    _W = Tensor([1/(120/3.6), 1.0, 1/2000, 1/(3.7*3),  1/3.6, 1/3.6, 1/2])
-    """
-    标准化输入时用的缩放因子
-
-    [速度, x, y, 航向角, 加速度x, 加速度y, lane] 的单位修正权重
-    """
-
     WEIGHT_AROUND = Tensor([0.5, 0.0, 1.0, 1.0, 0.05, 0.05, 1.0])
     """
     计算奖励的周车部分时, 各维度的权重, 用于计算周车的价值
@@ -69,8 +56,8 @@ class HighwayReward(IReward):
         """
 
         # 计算专家状态的奖励
-        if "expert" in kwargs:  # 专家数据, shape = (B, 112), 且没有标准化
-            x = self._standardize(kwargs["expert"].reshape(-1, 16, 7))  # shape = (B, 16, 7)
+        if "expert" in kwargs:  # 专家数据, shape = (B, 112), 已经标准化
+            x = kwargs["expert"].reshape(-1, 16, 7)  # shape = (B, 16, 7)
             return self._reward_by_obs(x)
 
         # 计算实际状态的奖励
@@ -78,20 +65,7 @@ class HighwayReward(IReward):
             return self._reward_by_obs(kwargs["state"][:,0:112].reshape(-1, 16, 7))
         raise ValueError("必须提供合法的kwargs参数")
 
-    @no_grad
-    def _standardize(self, observations:Tensor)->Tensor:
-        """对观测值进行标准化处理
 
-        (B, 16, 7) -> (B, 16, 7)
-
-        Args:
-            observations (np.ndarray): shape =  (B, 16, 7), 7:[速度, 航向角, x, y, 加速度x, 加速度y, lane]
-
-        Returns:
-            standardized_observations (np.ndarray): shape =  (B, 16, 7), 标准化后的观测值
-        """
-        obs_ = torch.clone(observations)
-        return (obs_ -self._B) * self._W
 
     # def _reward_around(self, observations:Tensor)->Tensor:
     #     """根据周车和自车的相对状态定义奖励 (越高越好, 不一定是正值)
@@ -266,7 +240,9 @@ class HighwayReward(IReward):
         """
         # around = self._reward_around(observations)
         ego = self._reward_ego(observations)
-        return ego, torch.zeros(ego.shape, dtype=torch.float32)
+        done = observations[:, 0, 2] >= 1.0  # shape = (B,), 终止标志, 1表示成功, 0表示未终止, -1表示失败
+
+        return ego, done
 
     def _distance_weights(self, distance: Tensor, roi: float, threshold: float) -> Tensor:
         """根据距离和标准差生成权重

@@ -1,8 +1,6 @@
 # regiopn imports
 import logging
-from collections import deque
 from dataclasses import dataclass
-from typing import Self
 
 import numpy as np
 from gymnasium.envs.box2d import BipedalWalker

@@ -17,7 +17,8 @@ from highway_env.road.lane import LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
 from highway_env.vehicle.kinematics import Vehicle
-from torch import Tensor
+from highway_env.vehicle.objects import Obstacle
+from torch import Tensor, tensor
 
 from highway_extension._config.highway import \
     ContinuousHighwayEnvironmentConfig
@@ -38,50 +39,16 @@ __all__ = [
 class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
     """连续动作空间的高速公路环境, 继承自 highway_env.AbstractEnv
     """
-    # region classmethod and field
-    _B = Tensor([0,0, 9000, 3066.57-3.70, 0, 0, 0])
-    """
-    标准化输入时用的偏移量
-
-    [速度,航向角, x, y,  加速度x, 加速度y, lane] 的最小值
-    """
-    _W = Tensor([1/(120/3.6), 1.0, 1/2000, 1/(3.7*3),  1/3.6, 1/3.6, 1/2])
-    """
-    标准化输入时用的缩放因子
-
-    [速度, x, y, 航向角, 加速度x, 加速度y, lane] 的单位修正权重
-    """
+    # region properties
     @property
     def ZERO_ACTION(self) -> Tensor:
         return torch.zeros(2, dtype=torch.float32).cpu()
     @property
     def GOAL(self) -> Tensor:
-        ego_goal= torch.tensor([
-            120.0 / 3.6,  # goal speed
-            0.0,  # goal heading
-            11000.0, # goal x
-            3070.27 + 1.85,  # goal y (middle of lane 0)
-            0.0,  # goal acceleration_x
-            0.0,  # goal acceleration_y
-            1.0,  # goal lane (lane 1)
-        ]).reshape(1, 7)
-
+        ego_goal = Tensor([1.0,0.0,1.0,0.5,0.0,0.0,0.5]).reshape(1, 7) # shape = (1, 7)
         other_goal = torch.zeros(15, 7, dtype=torch.float32)  # 不关心周车状态, 用 0 填充
         return torch.cat([ego_goal, other_goal]).float().cpu()
-    @property
-    def STANDARDIZED_GOAL(self) -> Tensor:
-        ego_goal= torch.tensor([
-            1.0,  # goal speed
-            0.0,  # goal heading
-            1.0, # goal x
-            0.5,  # goal y (middle of lane 0)
-            0.0,  # goal acceleration_x
-            0.0,  # goal acceleration_y
-            0.5,  # goal lane (lane 1)
-        ]).reshape(1, 7)
 
-        other_goal = torch.zeros(15, 7, dtype=torch.float32)  # 不关心周车状态, 用 0 填充
-        return torch.cat([ego_goal, other_goal]).float().cpu()
     @classmethod
     def default_config(cls)->dict:
         config = super().default_config()
@@ -107,6 +74,7 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
             "render_agent": True,
             "offscreen_rendering": False,
             "neighbour_vehicles_connected_lanes": True,
+            "add_walls":True
 
         })
         return config
@@ -117,50 +85,11 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         self._ego_vehicle: Vehicle = None # type: ignore
         self._surrounding_vehicles = []
         self._reward_fn = reward
-        self._step_count = 0
-        self._last_observation: Tensor | None = None
         AbstractEnv.__init__(self, config=ContinuousHighwayEnvironment.default_config(), render_mode="human")
 
     # region properties, easy access way.
     @property
     def observation(self) -> Tensor:
-        """当前的观察+目标, shape = (1,224)
-
-        状态和目标均为 (1自车+15周车)*7维状态, 展平为 (1, 112)
-        """
-        # ego
-        heading = float(self._ego_vehicle.heading)
-        acc = float(self._ego_vehicle.action.get("acceleration", 0.0)) # type: ignore
-        ego_state = torch.tensor([
-            float(self._ego_vehicle.speed),
-            heading,
-            float(self._ego_vehicle.position[0]),
-            float(self._ego_vehicle.position[1]),
-            float(acc * np.cos(heading)),
-            float(acc * np.sin(heading)),
-            float(self._ego_vehicle.lane_index[2]),
-        ], dtype=torch.float32).reshape(1, 7)
-
-        # surrounding
-        surrounding_states = torch.zeros(15, 7, dtype=torch.float32)
-        for i, vehicle in enumerate(self._surrounding_vehicles):
-            heading = float(vehicle.heading)
-            acc = float(vehicle.action.get("acceleration", 0.0)) # type: ignore
-            surrounding_states[i] = torch.tensor([
-                float(vehicle.speed),
-                heading,
-                float(vehicle.position[0]),
-                float(vehicle.position[1]),
-                float(acc * np.cos(heading)),
-                float(acc * np.sin(heading)),
-                float(vehicle.lane_index[2]),
-            ], dtype=torch.float32)
-
-        obs = torch.cat([ego_state, surrounding_states], dim=0).reshape(1, 16, 7) # shape = (1, 16, 7)
-
-        return torch.cat([obs, self.GOAL.reshape(1,16,7)], dim=2).reshape(1,-1).float().cpu() # shape = (1, 224)
-    @property
-    def standardized_observation(self) -> Tensor:
         """当前的标准化观察+目标, shape = (1,224)
 
         状态和目标均为 (1自车+15周车)*7维状态, 展平为 (1, 112)
@@ -192,11 +121,12 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
                 float(acc * np.sin(heading)),
                 float(vehicle.lane_index[2]),
             ], dtype=torch.float32)
-
+        # 合并自车+周车
         obs = torch.cat([ego_state, surrounding_states], dim=0).reshape(1, 16, 7) # shape = (1, 16, 7)
-        obs = self._standardize(obs)
-
-        return torch.cat([obs, self.STANDARDIZED_GOAL.reshape(1,16,7)], dim=2).reshape(1,-1).float().cpu() # shape = (1, 224)
+        # 标准化
+        obs /= torch.tensor(self._config.weight) # shape = (1, 16, 7)
+        # 拼接目标 + 展平
+        return torch.cat([obs, self.GOAL.reshape(1,16,7)], dim=2).reshape(1,-1).float().cpu() # shape = (1, 224)
 
     @property
     def terminated(self) -> Tensor:
@@ -204,7 +134,7 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         ego = self._ego_vehicle
         if ego.crashed or not bool(ego.on_road):  # 碰撞
             return torch.tensor([-1.0], dtype=torch.float32).cpu()
-        elif ego.position[0] >= self._config.road_length+9000.0:  # 到达终点
+        elif ego.position[0] >= self._config.length:  # 到达终点
             return torch.tensor([1.0], dtype=torch.float32).cpu()
         else:  # 未终止
             return torch.tensor([0.0], dtype=torch.float32).cpu()
@@ -217,21 +147,21 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         self._make_road()
         self._make_ego_vehicle()
         self._make_surrounding_vehicles()
+        self._make_obstacles()
 
     def _make_road(self):
         network = RoadNetwork()
-
+        length = self._config.length
+        lane_width = self._config.lane_width
+        speed_limit = self._config.speed_limit
         # 创建车道
-        for lane_range in self._config.lane_range:
-            y0, y1 = lane_range
-            lane_center = 0.5 * (y0 + y1)
-            width = y1 - y0
+        for lane_center_y in self._config.lanes:
             lane = StraightLane(
-                start=np.array([9000.0, lane_center]),
-                end=np.array([9000.0+self._config.road_length, lane_center]),
-                width=float(width),
+                start=np.array([0, lane_center_y]),
+                end=np.array([0+length, lane_center_y]),
+                width=float(lane_width),
                 line_types=(LineType.CONTINUOUS, LineType.CONTINUOUS), # type: ignore
-                speed_limit=120/3.6,
+                speed_limit=speed_limit,
             )
             network.add_lane("start", "end", lane)
 
@@ -248,7 +178,7 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
     def _make_ego_vehicle(self):
         self.controlled_vehicles = []
         ego_cls = self.action_type.vehicle_class
-        v, h, x,y, ax, ay, l = self._config.ego_vehicle_state
+        v, h, x,y, ax, ay, l = (np.array(self._config.ego) * self._config.weight).tolist()
         self._ego_vehicle:Vehicle = ego_cls(
             road=self.road,
             position=(x,y),
@@ -261,63 +191,27 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
 
     def _make_surrounding_vehicles(self):
         self._surrounding_vehicles:list[Vehicle] = []
-        n = self._config.surrounding_vehicle_count
-        if len(self._config.surrounding_vehicle_state) == n:
-            for state in self._config.surrounding_vehicle_state:
-                v, h, x,y, ax, ay, l = state
 
-                lane = self.road.network.get_lane(("start", "end", int(l)))
-                vehicle = IDMVehicle(
-                    road=self.road,
-                    position=lane.position(float(x), 0.0),
-                    heading=float(h),
-                    speed=float(v),
-                    target_speed=120/3.6,
-                    route=[("start", "end", None)],# type: ignore
-                )
-                vehicle.on_state_update()
-                vehicle.collidable = True
-                self._surrounding_vehicles.append(vehicle)
-                self.road.vehicles.append(vehicle)
-        else:
-            xs = np.linspace(9100.0, 9100.0+1000.0, n)
+        speeds = np.random.uniform(low = 60/3.6, high=100/3.6, size=self._config.surround_count)
+        target_speeds = np.random.uniform(low = 80/3.6, high=90/3.6, size=self._config.surround_count)
 
-            for i, x in enumerate(xs):
-                lane_id = i % 3
-                lane = self.road.network.get_lane(("start", "end", lane_id))
-                speed = float(self.np_random.uniform(60/3.6, 120/3.6))
-                vehicle = IDMVehicle(
-                    road=self.road,
-                    position=lane.position(float(x), 0.0),
-                    heading=0.0,
-                    speed=speed,
-                    target_speed=120/3.6,
-                    route=[("start", "end", None)],# type: ignore
-                )
-                vehicle.on_state_update()
-                vehicle.collidable = True
-                self._surrounding_vehicles.append(vehicle)
-                self.road.vehicles.append(vehicle)
 
-    def _simulate(self, action=None):
-        frames = int(
-            self.config["simulation_frequency"]
-            // self.config["policy_frequency"]
-        )
+        for i in range(self._config.surround_count):
+            vehicle:IDMVehicle = IDMVehicle.create_random(road=self.road,lane_from="start", lane_to="end", spacing=1, speed=speeds[i])  # type: ignore
+            vehicle.target_speed = target_speeds[i]
+            vehicle.route = [("start", "end", None)]  # type: ignore
+            vehicle.on_state_update()
+            self._surrounding_vehicles.append(vehicle)
+            self.road.vehicles.append(vehicle)
+    def _make_obstacles(self):
+        """创建障碍物作为路标"""
+        xs = np.arange(0, self._config.length, 50)
+        for x in xs:
+            box1 = Obstacle(self.road, position=(x, -2), heading=0)
+            self.road.objects.append(box1)
 
-        if action is not None:
-            self.action_type.act(action)
 
-        for frame in range(frames):
-            self.road.act()
 
-            self.road.step(1.0 / self.config["simulation_frequency"])
-            self.steps += 1
-
-            if frame < frames - 1:
-                self._automatic_rendering()
-
-        self.enable_auto_render = False
 
 
     def _set_surrounding_states(
@@ -340,14 +234,12 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
     # endregion
 
     def reset(self) -> tuple[Tensor, Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        self._step_count = 0
         AbstractEnv.reset(self)
-        obs = self.standardized_observation
+        obs = self.observation
         reward, terminated = self._reward_fn(state = obs)
         truncated = torch.tensor([0])
         info = {}
-        self._last_observation = obs.clone()
-        return self.standardized_observation.cpu(), reward.cpu(), terminated.cpu(), truncated.cpu(), info
+        return self.observation.cpu(), reward.cpu(), tensor(0.0), truncated.cpu(), info
 
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
@@ -361,16 +253,16 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
             action = action.flatten()
 
         # 执行动作, 更新环境状态
-        state = self.standardized_observation.clone()
+        state = self.observation.clone()
 
         # 手动将方向盘的角度限制在一个较小的角度内 (0.01 rad)
         action[1] *=0.01
 
         _, _, _, truncated, _ = AbstractEnv.step(self, action.cpu().numpy())
-        self._step_count += 1
+
 
         # 观察
-        next_obs = self.standardized_observation.clone()
+        next_obs = self.observation.clone()
 
         # 计算奖励
         reward, _ = self._reward_fn(state = state, action=action, next_state=next_obs)
@@ -382,41 +274,24 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         if self._ego_vehicle.speed < 60/3.6:
             reward -= 10.0
 
-
-        self._last_observation = next_obs
-        return  self.standardized_observation.cpu(), reward.cpu(), self.terminated.cpu(), truncated, {}
+        return  self.observation.cpu(), reward.cpu(), self.terminated.cpu(), truncated, {}
 
     # region override 没有实际作用
     def _reward(self, action): return 0.0
 
-    def _is_terminated(self): return bool(self._ego_vehicle and self._ego_vehicle.crashed)
+    def _is_terminated(self):
+        if not self._ego_vehicle:
+            return False
+        if self._ego_vehicle.crashed:
+            return True
+        if not self._ego_vehicle.on_road:
+            return True
+        return False
 
-    def _is_truncated(self): return self.time >= self.config["duration"]
+    def _is_truncated(self): return self.time >= self._config.truncated_time
 
     def _info(self, obs, action=None): return {}
-
-    def _standardize(self, observations:Tensor)->Tensor:
-        """对观测值进行标准化处理
-
-        (B, 16, 14) -> (B, 16, 7)
-
-        Args:
-            observations (np.ndarray): shape =  (B, 16, 7), 7:[速度, 航向角, x, y, 加速度x, 加速度y, lane]
-
-        Returns:
-            standardized_observations (np.ndarray): shape =  (B, 16, 7), 标准化后的观测值
-        """
-        obs_ = torch.clone(observations)
-        return (obs_ -self._B) * self._W
     # endregion
-
-
-
-
-
-
-
-
 
 
 

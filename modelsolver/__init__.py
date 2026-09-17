@@ -750,13 +750,13 @@ class AgentModelSolver(ModelSolver):
                 for epoch in range(self.config.epoch):
                     self.train_single_step_through_behavior_cloning()
                     if print_interval > 0 and epoch % print_interval == 0:
-                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.stats['actor_loss'][-1]:.4f}")
                 self.model.soft_update_target_net("actor", tau=1.0)
             case "irl":
                 for epoch in range(self.config.epoch):
                     self.train_single_step_through_irl()
                     if print_interval > 0 and epoch % print_interval == 0:
-                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.stats['actor_loss'][-1]:.4f}")
                 self.model.soft_update_target_net("critic", tau=1.0)
 
             case "ddpg" | "sac" | "td3" as offline_method:
@@ -766,7 +766,7 @@ class AgentModelSolver(ModelSolver):
                     while not has_train:
                         has_train = self.train_single_epoch_offline(epoch, method=offline_method)
                     if print_interval > 0 and epoch % print_interval == 0:
-                                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], Loss on total dataset: {self.train_losses[-1]:.4f}")
+                                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], Actor Loss: {self.stats['actor_loss'][-1]:.4f}, Critic Loss: {self.stats['critic_loss'][-1]:.4f}, Reward: {self.stats['episode_return'][-1]:.4f}")
 
 
     def train_single_step_through_behavior_cloning(self):
