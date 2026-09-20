@@ -761,12 +761,11 @@ class AgentModelSolver(ModelSolver):
 
             case "ddpg" | "sac" | "td3" as offline_method:
                 for epoch in range(self.config.epoch):
-
                     has_train = False
                     while not has_train:
                         has_train = self.train_single_epoch_offline(epoch, method=offline_method)
                     if print_interval > 0 and epoch % print_interval == 0:
-                                            print(f"Epoch [{epoch + 1}/{self.config.epoch}], Actor Loss: {self.stats['actor_loss'][-1]:.4f}, Critic Loss: {self.stats['critic_loss'][-1]:.4f}, Reward: {self.stats['episode_return'][-1]:.4f}")
+                        print(f"Epoch [{epoch + 1}/{self.config.epoch}], Actor Loss: {self.stats['actor_loss'][-1]:.4f}, Critic Loss: {self.stats['critic_loss'][-1]:.4f}, Reward: {self.stats['episode_return'][-1]:.4f}\n")
 
 
     def train_single_step_through_behavior_cloning(self):
@@ -1061,7 +1060,7 @@ class AgentModelSolver(ModelSolver):
                 # TODO  设置为可配置的打印
                 if len(recent_rewards) > 70:
                     print(f"Epoch: {epoch + 1}, Reward: {reward.item():.4f}, Total Reward: {total_r.item():.4f}, Recent Average Reward: {mean(recent_rewards):.4f}", end="\r")
-            # 训练
+                # 训练
             if not self.replay_buffer.can_sample:
                 pass
             else:

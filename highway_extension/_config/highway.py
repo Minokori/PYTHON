@@ -1,7 +1,6 @@
 """连续高速公路场景使用的配置类"""
 # region imports
 from dataclasses import dataclass, field
-from math import pi
 
 from modelsolver.abc.config import EnvironmentConfig
 
@@ -49,3 +48,5 @@ class ContinuousHighwayEnvironmentConfig(EnvironmentConfig):
 
     # 继承自 EnvironmentConfig 的截断时间, 与 duration 保持一致.
     truncated_time: int = 400
+    roi = 3
+    """感兴趣车辆的数量, 用于计算奖励和终止条件, 例如 roi=3 表示只考虑最近的 3 辆车."""

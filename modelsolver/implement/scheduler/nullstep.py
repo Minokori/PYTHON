@@ -29,10 +29,10 @@ class AgentNullScheduler(IAgentScheduler):
     def __init__(self, config: HyperParameterConfig, optimizer: IOptimizer):
         assert isinstance(optimizer, IAgentOptimizer), "optimizer must be an instance of IAgentOptimizer"
         self._config = config
-        self._actor_scheduler = LambdaLR(optimizer=optimizer.actor_optimizer, lr_lambda=lambda epoch: self.config.actor_lr)
-        self._critic_scheduler = LambdaLR(optimizer=optimizer.critic_optimizer, lr_lambda=lambda epoch: self.config.critic_lr)
-        self._critic_other_scheduler = LambdaLR(optimizer=optimizer.critic_other_optimizer, lr_lambda=lambda epoch: self.config.critic_lr)
-        self._log_alpha_scheduler = LambdaLR(optimizer=optimizer.log_alpha_optimizer, lr_lambda=lambda epoch: self.config.learning_rate)
+        self._actor_scheduler = LambdaLR(optimizer=optimizer.actor_optimizer, lr_lambda=lambda epoch: 1.0)  # 恒定学习率
+        self._critic_scheduler = LambdaLR(optimizer=optimizer.critic_optimizer, lr_lambda=lambda epoch: 1.0)  # 恒定学习率
+        self._critic_other_scheduler = LambdaLR(optimizer=optimizer.critic_other_optimizer, lr_lambda=lambda epoch: 1.0)  # 恒定学习率
+        self._log_alpha_scheduler = LambdaLR(optimizer=optimizer.log_alpha_optimizer, lr_lambda=lambda epoch: 1.0)  # 恒定学习率
 
 
     def __getitem__(self, key: str) -> LRScheduler:

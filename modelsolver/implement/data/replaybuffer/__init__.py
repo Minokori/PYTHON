@@ -1,4 +1,5 @@
 """经验回放池的实现"""
+import logging
 from collections import deque
 from typing import Self
 
@@ -8,6 +9,8 @@ from modelsolver.abc.config import ReplayBufferConfig
 from modelsolver.abc.data import IReplayBuffer
 
 
+logging.basicConfig(level=logging.INFO, filemode="w", filename="./logs/replaybuffer.log")
+open("./logs/replaybuffer.log", "w").close()  # 清空日志文件
 class DefaultReplayBuffer(IReplayBuffer):
     """经验回放池接口
 
@@ -18,6 +21,7 @@ class DefaultReplayBuffer(IReplayBuffer):
         return self._config # type: ignore
     def __init__(self, config: ReplayBufferConfig):
         self._config = config
+        self._can_sample = False
         self._create_buffer()
 
     def __add__(self, other: Self) -> Self:
@@ -45,7 +49,14 @@ class DefaultReplayBuffer(IReplayBuffer):
     @property
     def can_sample(self) -> bool:
         """是否可以从池中采样"""
-        return len(self._state_buffer) >= self._config.minimal_capacity
+        if self._can_sample:
+            return self._can_sample
+        elif len(self._state_buffer) >= self._config.minimal_capacity:
+            self._can_sample = True
+            logging.info(f"经验回放池已达到最小容量 {self._config.minimal_capacity}")
+            print(f"经验回放池已达到最小容量 {self._config.minimal_capacity}")
+        return self._can_sample
+
     # endregion
 
     def append(

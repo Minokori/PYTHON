@@ -11,8 +11,7 @@
 
 import numpy as np
 import torch
-from highway_env import utils
-from highway_env.envs.common.abstract import AbstractEnv
+from highway_env.envs.highway_env import HighwayEnv
 from highway_env.road.lane import LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
@@ -23,6 +22,7 @@ from torch import Tensor, tensor
 from highway_extension._config.highway import \
     ContinuousHighwayEnvironmentConfig
 from highway_extension._reward.highway import HighwayReward
+from highway_extension._utils.highway import config as default_config
 from modelsolver.abc.config import EnvironmentConfig
 from modelsolver.abc.environment import IEnvironment
 from modelsolver.abc.reward import IReward
@@ -36,7 +36,7 @@ __all__ = [
     "ContinuousHighwayEnvironment",
     "HighwayReward",]
 
-class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
+class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
     """连续动作空间的高速公路环境, 继承自 highway_env.AbstractEnv
     """
     # region properties
@@ -46,38 +46,10 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
     @property
     def GOAL(self) -> Tensor:
         ego_goal = Tensor([1.0,0.0,1.0,0.5,0.0,0.0,0.5]).reshape(1, 7) # shape = (1, 7)
-        other_goal = torch.zeros(15, 7, dtype=torch.float32)  # 不关心周车状态, 用 0 填充
+        other_goal = torch.zeros(self._config.roi, 7, dtype=torch.float32)  # 不关心周车状态, 用 0 填充
         return torch.cat([ego_goal, other_goal]).float().cpu()
 
-    @classmethod
-    def default_config(cls)->dict:
-        config = super().default_config()
-        utils.update_config(config, {
-            "observation": {"type": "Kinematics"},
-            "action": {
-                "type": "ContinuousAction",
-                "acceleration_range": [-5.0, 5.0],
-                "steering_range": [-np.pi / 4, np.pi / 4],
-                "longitudinal": True,
-                "lateral": True,
-                "dynamical": False,
-                "clip": True,
-            },
-            "simulation_frequency": 50,
-            "policy_frequency": 5,
-            "duration": 400.0,
-            "screen_width": 1200,
-            "screen_height": 400,
-            "scaling": 7.0,
-            "centering_position": [0.5, 0.5],
-            "show_trajectories": False,
-            "render_agent": True,
-            "offscreen_rendering": False,
-            "neighbour_vehicles_connected_lanes": True,
-            "add_walls":True
 
-        })
-        return config
     # endregion
 
     def __init__(self, config:EnvironmentConfig, reward:IReward):
@@ -85,48 +57,20 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         self._ego_vehicle: Vehicle = None # type: ignore
         self._surrounding_vehicles = []
         self._reward_fn = reward
-        AbstractEnv.__init__(self, config=ContinuousHighwayEnvironment.default_config(), render_mode="human")
+        self._passed = 0
+        self._passed_vehicle = 0
+        HighwayEnv.__init__(self, config=default_config, render_mode="human")
 
     # region properties, easy access way.
     @property
     def observation(self) -> Tensor:
-        """当前的标准化观察+目标, shape = (1,224)
+        """使用 highway_env 的 Kinematics 观测. 输出 shape = (1, vehicles_count * len(features)).
 
-        状态和目标均为 (1自车+15周车)*7维状态, 展平为 (1, 112)
+        该观测包含自车 + 最近若干辆周车的 relative x/y/vx/vy 等特征,
+        比“按绝对 x 距离取最近 3 辆车”更适合避撞和车道决策.
         """
-        # ego
-        heading = float(self._ego_vehicle.heading)
-        acc = float(self._ego_vehicle.action.get("acceleration", 0.0)) # type: ignore
-        ego_state = torch.tensor([
-            float(self._ego_vehicle.speed),
-            heading,
-            float(self._ego_vehicle.position[0]),
-            float(self._ego_vehicle.position[1]),
-            float(acc * np.cos(heading)),
-            float(acc * np.sin(heading)),
-            float(self._ego_vehicle.lane_index[2]),
-        ], dtype=torch.float32).reshape(1, 7)
-
-        # surrounding
-        surrounding_states = torch.zeros(15, 7, dtype=torch.float32)
-        for i, vehicle in enumerate(self._surrounding_vehicles):
-            heading = float(vehicle.heading)
-            acc = float(vehicle.action.get("acceleration", 0.0)) # type: ignore
-            surrounding_states[i] = torch.tensor([
-                float(vehicle.speed),
-                heading,
-                float(vehicle.position[0]),
-                float(vehicle.position[1]),
-                float(acc * np.cos(heading)),
-                float(acc * np.sin(heading)),
-                float(vehicle.lane_index[2]),
-            ], dtype=torch.float32)
-        # 合并自车+周车
-        obs = torch.cat([ego_state, surrounding_states], dim=0).reshape(1, 16, 7) # shape = (1, 16, 7)
-        # 标准化
-        obs /= torch.tensor(self._config.weight) # shape = (1, 16, 7)
-        # 拼接目标 + 展平
-        return torch.cat([obs, self.GOAL.reshape(1,16,7)], dim=2).reshape(1,-1).float().cpu() # shape = (1, 224)
+        obs = np.asarray(self.observation_type.observe(), dtype=np.float32)
+        return torch.from_numpy(obs).flatten().unsqueeze(0).cpu()
 
     @property
     def terminated(self) -> Tensor:
@@ -136,7 +80,9 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
             return torch.tensor([-1.0], dtype=torch.float32).cpu()
         elif ego.position[0] >= self._config.length:  # 到达终点
             return torch.tensor([1.0], dtype=torch.float32).cpu()
-        else:  # 未终止
+        elif self._ego_vehicle.velocity[0] <= 10/3.6:  # 速度过低
+            return torch.tensor([-1.0], dtype=torch.float32).cpu()
+        else:# 正常行驶
             return torch.tensor([0.0], dtype=torch.float32).cpu()
     # endregion
 
@@ -193,7 +139,7 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         self._surrounding_vehicles:list[Vehicle] = []
 
         speeds = np.random.uniform(low = 60/3.6, high=100/3.6, size=self._config.surround_count)
-        target_speeds = np.random.uniform(low = 80/3.6, high=90/3.6, size=self._config.surround_count)
+        target_speeds = np.random.uniform(low = 60/3.6, high=90/3.6, size=self._config.surround_count)
 
 
         for i in range(self._config.surround_count):
@@ -234,12 +180,14 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
     # endregion
 
     def reset(self) -> tuple[Tensor, Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        AbstractEnv.reset(self)
-        obs = self.observation
-        reward, terminated = self._reward_fn(state = obs)
+        HighwayEnv.reset(self)
+        # obs = self.observation
+        # reward, terminated = self._reward_fn(state = obs)
+        self._passed = 0
+        self._passed_vehicle = 0
         truncated = torch.tensor([0])
         info = {}
-        return self.observation.cpu(), reward.cpu(), tensor(0.0), truncated.cpu(), info
+        return self.observation.cpu(), tensor(0.0), tensor(0.0), truncated.cpu(), info
 
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
@@ -252,33 +200,74 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
         else:
             action = action.flatten()
 
-        # 执行动作, 更新环境状态
-        state = self.observation.clone()
+        # 手动将方向盘的角度限制在一个较小的角度内
+        action[1] *= 0.1
 
-        # 手动将方向盘的角度限制在一个较小的角度内 (0.01 rad)
-        action[1] *=0.01
+        _, reward, _, truncated, _ = HighwayEnv.step(self, action.cpu().numpy())
 
-        _, _, _, truncated, _ = AbstractEnv.step(self, action.cpu().numpy())
+        # 从 highway_env 继承的默认奖励是:
+        #   reward = collision_reward*crashed + high_speed_reward*clip(forward_speed, reward_speed_range)
+        #   reward *= on_road
+        # 因此 _utils.highway.config 中关闭了 normalize_reward,
+        # 否则停车时也会得到约 0.71 的奖励, 智能体就会学会“停车等”.
+        if not isinstance(reward, float):
+            reward = float(reward)
 
+        # 1) 车道保持: 对横向偏移做稠密惩罚, 让车保持在车道中心附近.
+        lat = float(self._ego_vehicle.lane_offset[1])
+        lane_width = float(self._config.lane_width)
+        reward -= 2.0 * min((lat / lane_width) ** 2, 4.0)
 
-        # 观察
-        next_obs = self.observation.clone()
+        # 2) 安全跟车: 离前车太近时给出连续惩罚, 前方畅通时不受影响.
+        forward_speed = max(float(self._ego_vehicle.speed * np.cos(self._ego_vehicle.heading)), 0.0)
+        front_gap = self._front_clearance()
+        safe_gap = 8.0 + 1.5 * forward_speed
+        if front_gap < safe_gap:
+            reward -= 0.5 * (1.0 - front_gap / safe_gap)
 
-        # 计算奖励
-        reward, _ = self._reward_fn(state = state, action=action, next_state=next_obs)
+        # 2b) 对任何过近车辆(前/侧)进行连续避撞惩罚.
+        reward -= 0.8 * self._nearby_vehicle_penalty()
 
+        # 3) 事件奖励/惩罚.
+        if self.terminated.item() > 0:
+            reward += 100.0
+        elif self.terminated.item() < 0:
+            reward -= 50.0
 
-        # 加入极高的惩罚, 如果车辆偏离车道太远, 或者车辆速度过低
-        if self.terminated.item()<0:
-            reward -= 20.0
-        if self._ego_vehicle.speed < 60/3.6:
-            reward -= 10.0
+        return self.observation.cpu(), tensor(reward).cpu(), self.terminated.cpu(), truncated, {}
 
-        return  self.observation.cpu(), reward.cpu(), self.terminated.cpu(), truncated, {}
+    def _front_clearance(self) -> float:
+        """返回同车道正前方最近车辆的纵向距离, 若无前车返回 inf."""
+        ego = self._ego_vehicle
+        if ego is None:
+            return float("inf")
+        min_gap = float("inf")
+        for vehicle in self._surrounding_vehicles:
+            dx = float(vehicle.position[0] - ego.position[0])
+            if dx <= 0:
+                continue
+            dy = abs(float(vehicle.position[1] - ego.position[1]))
+            if dy < self._config.lane_width:
+                min_gap = min(min_gap, dx)
+        return min_gap
+
+    def _nearby_vehicle_penalty(self, radius: float = 20.0) -> float:
+        """对过近的周车给出连续惩罚, 用于减少碰撞."""
+        ego = self._ego_vehicle
+        if ego is None:
+            return 0.0
+        penalty = 0.0
+        for vehicle in self._surrounding_vehicles:
+            dx = float(vehicle.position[0] - ego.position[0])
+            if dx < -10.0:
+                continue
+            dy = float(vehicle.position[1] - ego.position[1])
+            dist = float(np.hypot(dx, dy))
+            if dist < radius:
+                penalty += (1.0 - dist / radius)
+        return min(penalty, 2.0)
 
     # region override 没有实际作用
-    def _reward(self, action): return 0.0
-
     def _is_terminated(self):
         if not self._ego_vehicle:
             return False
@@ -290,7 +279,6 @@ class ContinuousHighwayEnvironment(IEnvironment,AbstractEnv):
 
     def _is_truncated(self): return self.time >= self._config.truncated_time
 
-    def _info(self, obs, action=None): return {}
     # endregion
 
 
