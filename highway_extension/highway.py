@@ -69,7 +69,7 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         该观测包含自车 + 最近若干辆周车的 relative x/y/vx/vy 等特征,
         比“按绝对 x 距离取最近 3 辆车”更适合避撞和车道决策.
         """
-        obs = np.asarray(self.observation_type.observe(), dtype=np.float32)
+        obs = np.nan_to_num(np.asarray(self.observation_type.observe(), dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         return torch.from_numpy(obs).flatten().unsqueeze(0).cpu()
 
     @property
@@ -80,7 +80,7 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
             return torch.tensor([-1.0], dtype=torch.float32).cpu()
         elif ego.position[0] >= self._config.length:  # 到达终点
             return torch.tensor([1.0], dtype=torch.float32).cpu()
-        elif self._ego_vehicle.velocity[0] <= 10/3.6:  # 速度过低
+        elif self._ego_vehicle.velocity[0] <= 60/3.6:  # 速度过低
             return torch.tensor([-1.0], dtype=torch.float32).cpu()
         else:# 正常行驶
             return torch.tensor([0.0], dtype=torch.float32).cpu()
@@ -203,6 +203,7 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         # 手动将方向盘的角度限制在一个较小的角度内
         action[1] *= 0.1
 
+        prev_phi = self._lane_gap_potential()
         _, reward, _, truncated, _ = HighwayEnv.step(self, action.cpu().numpy())
 
         # 从 highway_env 继承的默认奖励是:
@@ -226,13 +227,28 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
             reward -= 0.5 * (1.0 - front_gap / safe_gap)
 
         # 2b) 对任何过近车辆(前/侧)进行连续避撞惩罚.
-        reward -= 0.8 * self._nearby_vehicle_penalty()
+        reward -= 0.6 * self._nearby_vehicle_penalty()
+
+        # 2c) 车道通畅势能 shaping: 鼓励移动到前方空间更大的车道.
+        next_phi = self._lane_gap_potential()
+        reward += 5.0 * (0.98 * next_phi - prev_phi)
+
+        # 2d) 超车事件奖励: 每新超过一辆车给一次奖励.
+        behind = sum(1 for v in self._surrounding_vehicles
+                     if float(v.position[0]) < float(self._ego_vehicle.position[0]))
+        if behind > self._passed_vehicle:
+            reward += 10.0 * (behind - self._passed_vehicle)
+            self._passed_vehicle = behind
 
         # 3) 事件奖励/惩罚.
         if self.terminated.item() > 0:
             reward += 100.0
         elif self.terminated.item() < 0:
             reward -= 50.0
+
+        # 4) 数值保护: 防止 inf/inf 等意外值污染 replay buffer 和梯度.
+        if not np.isfinite(reward):
+            reward = 0.0
 
         return self.observation.cpu(), tensor(reward).cpu(), self.terminated.cpu(), truncated, {}
 
@@ -250,6 +266,28 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
             if dy < self._config.lane_width:
                 min_gap = min(min_gap, dx)
         return min_gap
+
+    def _front_clearance_for_lane(self, lane_id: int) -> float:
+        """返回指定车道正前方最近车辆的纵向距离, 若无前车返回 inf."""
+        ego = self._ego_vehicle
+        if ego is None:
+            return float("inf")
+        min_gap = float("inf")
+        for vehicle in self._surrounding_vehicles:
+            if int(vehicle.lane_index[2]) != int(lane_id):
+                continue
+            dx = float(vehicle.position[0] - ego.position[0])
+            if dx > 0:
+                min_gap = min(min_gap, dx)
+        return min_gap
+
+    def _lane_gap_potential(self) -> float:
+        """以“所有车道中最大的前方间距”作为势能, 用于 potential-based shaping."""
+        gaps = [self._front_clearance_for_lane(lane_id) for lane_id in range(len(self._config.lanes))]
+        best_gap = max(gaps)
+        if not np.isfinite(best_gap):
+            return 1.0
+        return best_gap / (best_gap + 30.0)
 
     def _nearby_vehicle_penalty(self, radius: float = 20.0) -> float:
         """对过近的周车给出连续惩罚, 用于减少碰撞."""
