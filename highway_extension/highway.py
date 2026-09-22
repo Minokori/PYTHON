@@ -219,12 +219,15 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         lane_width = float(self._config.lane_width)
         reward -= 2.0 * min((lat / lane_width) ** 2, 4.0)
 
-        # 2) 安全跟车: 离前车太近时给出连续惩罚, 前方畅通时不受影响.
+        # 2) 安全跟车: 离前车太近或接近过快时给强惩罚.
         forward_speed = max(float(self._ego_vehicle.speed * np.cos(self._ego_vehicle.heading)), 0.0)
-        front_gap = self._front_clearance()
+        front_gap, front_ttc = self._front_risk()
         safe_gap = 8.0 + 1.5 * forward_speed
         if front_gap < safe_gap:
-            reward -= 0.5 * (1.0 - front_gap / safe_gap)
+            ratio = front_gap / safe_gap
+            reward -= 2.5 * (1.0 - ratio) ** 2
+        if front_ttc < 2.0:
+            reward -= 3.0 * (1.0 - front_ttc / 2.0) ** 2
 
         # 2b) 对任何过近车辆(前/侧)进行连续避撞惩罚.
         reward -= 0.6 * self._nearby_vehicle_penalty()
@@ -267,6 +270,28 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
                 min_gap = min(min_gap, dx)
         return min_gap
 
+    def _front_risk(self) -> tuple[float, float]:
+        """返回同车道正前方最近车辆的 (间距, TTC). 无前车时返回 (inf, inf)."""
+        ego = self._ego_vehicle
+        if ego is None:
+            return float("inf"), float("inf")
+        front_gap = float("inf")
+        lead_speed = 0.0
+        for vehicle in self._surrounding_vehicles:
+            dx = float(vehicle.position[0] - ego.position[0])
+            if dx <= 0:
+                continue
+            dy = abs(float(vehicle.position[1] - ego.position[1]))
+            if dy < self._config.lane_width and dx < front_gap:
+                front_gap = dx
+                lead_speed = float(vehicle.speed)
+        if not np.isfinite(front_gap):
+            return front_gap, float("inf")
+        forward_speed = max(float(ego.speed * np.cos(ego.heading)), 0.0)
+        closing_speed = max(forward_speed - lead_speed, 0.0)
+        ttc = front_gap / max(closing_speed, 1e-3)
+        return front_gap, ttc
+
     def _front_clearance_for_lane(self, lane_id: int) -> float:
         """返回指定车道正前方最近车辆的纵向距离, 若无前车返回 inf."""
         ego = self._ego_vehicle
@@ -282,9 +307,20 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         return min_gap
 
     def _lane_gap_potential(self) -> float:
-        """以“所有车道中最大的前方间距”作为势能, 用于 potential-based shaping."""
+        """以“所有车道中安全的前方间距”作为势能, 用于 potential-based shaping.
+
+        只考虑大于当前安全跟车距离的车道间距, 避免奖励驶入同样不安全的小间隙.
+        """
+        ego = self._ego_vehicle
+        if ego is None:
+            return 0.0
+        forward_speed = max(float(ego.speed * np.cos(ego.heading)), 0.0)
+        safe_gap = 8.0 + 1.5 * forward_speed
         gaps = [self._front_clearance_for_lane(lane_id) for lane_id in range(len(self._config.lanes))]
-        best_gap = max(gaps)
+        safe_gaps = [g for g in gaps if np.isfinite(g) and g > safe_gap]
+        if not safe_gaps:
+            return 0.0
+        best_gap = max(safe_gaps)
         if not np.isfinite(best_gap):
             return 1.0
         return best_gap / (best_gap + 30.0)
