@@ -7,8 +7,8 @@ config = {
                 "type": "Kinematics",
                 "vehicles_count": 16,
                 "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
-                "absolute": False,
-                "normalize": True,
+                "absolute": False, # True: 观测值是绝对坐标, False: 观测值是相对坐标
+                "normalize": True,  # 归一化, 目前使用了默认值[100, 100, 20, 20].
                 "clip": True,
                 "see_behind": False,
                 "observe_intentions": False,

@@ -134,5 +134,7 @@ class EnvironmentConfig(IConfig):
     """是否启用终止状态检测.设置为 >0 的值时, 当连续若干时间步达到数值状态时, 环境将进入终止状态."""
     truncated_time: int = -1
     """时间步截断. 设置为 <0 则不启用截断."""
+    with_goal: bool = False
+    """是否启用 GOAL 以使用 HER 算法."""
 
 # endregion

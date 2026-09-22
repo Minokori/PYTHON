@@ -45,9 +45,17 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         return torch.zeros(2, dtype=torch.float32).cpu()
     @property
     def GOAL(self) -> Tensor:
-        ego_goal = Tensor([1.0,0.0,1.0,0.5,0.0,0.0,0.5]).reshape(1, 7) # shape = (1, 7)
-        other_goal = torch.zeros(self._config.roi, 7, dtype=torch.float32)  # 不关心周车状态, 用 0 填充
-        return torch.cat([ego_goal, other_goal]).float().cpu()
+        # presence, x, y, vx, vy, cos(heading), sin(heading)
+        # 目标状态: 车道中间, 速度为 0.5*max_speed, heading = 0
+        ego_goal = Tensor([1.0, # presence
+                           1.0, # x (绝对)
+                           0.5, # y (绝对), 环境归一化方法: y真实/车道*默认车道宽(4m)
+                           120/3.6/80, # vx (绝对, 默认的归一化为 -40~40 m/s, 归一化后为 -1~1)
+                           0.0, # vy (绝对)
+                           1.0, # cos(heading)
+                           0.0  # sin(heading)
+                           ]).reshape(1, 7) # shape = (1, 7)
+        return ego_goal.float().flatten().cpu() # shape = (7,)
 
 
     # endregion
@@ -63,15 +71,18 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
 
     # region properties, easy access way.
     @property
-    def observation(self) -> Tensor:
+    def _get_observation(self) -> Tensor:
         """使用 highway_env 的 Kinematics 观测. 输出 shape = (1, vehicles_count * len(features)).
 
         该观测包含自车 + 最近若干辆周车的 relative x/y/vx/vy 等特征,
         比“按绝对 x 距离取最近 3 辆车”更适合避撞和车道决策.
         """
         obs = np.nan_to_num(np.asarray(self.observation_type.observe(), dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-        return torch.from_numpy(obs).flatten().unsqueeze(0).cpu()
-
+        if not self._config.with_goal:
+            return torch.from_numpy(obs).flatten().unsqueeze(0).cpu()
+        else:
+            obs_with_goal = np.concatenate([obs, self.GOAL], axis=0)
+            return torch.from_numpy(obs_with_goal).flatten().unsqueeze(0).cpu()
     @property
     def terminated(self) -> Tensor:
         """终止标志, 1表示成功, 0表示未终止, -1表示失败"""
@@ -156,10 +167,6 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
             box1 = Obstacle(self.road, position=(x, -2), heading=0)
             self.road.objects.append(box1)
 
-
-
-
-
     def _set_surrounding_states(
         self,
         surrounding_observation: Tensor,
@@ -187,7 +194,7 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         self._passed_vehicle = 0
         truncated = torch.tensor([0])
         info = {}
-        return self.observation.cpu(), tensor(0.0), tensor(0.0), truncated.cpu(), info
+        return self._get_observation.cpu(), tensor(0.0), tensor(0.0), truncated.cpu(), info
 
 
     def step(self, action: Tensor) -> tuple[Tensor, Tensor, Tensor, bool, dict[str, Tensor]]:
@@ -253,7 +260,7 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         if not np.isfinite(reward):
             reward = 0.0
 
-        return self.observation.cpu(), tensor(reward).cpu(), self.terminated.cpu(), truncated, {}
+        return self._get_observation.cpu(), tensor(reward).cpu(), self.terminated.cpu(), truncated, {}
 
     def _front_clearance(self) -> float:
         """返回同车道正前方最近车辆的纵向距离, 若无前车返回 inf."""
