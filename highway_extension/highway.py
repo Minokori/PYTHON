@@ -72,17 +72,52 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
     # region properties, easy access way.
     @property
     def _get_observation(self) -> Tensor:
-        """使用 highway_env 的 Kinematics 观测. 输出 shape = (1, vehicles_count * len(features)).
+        """返回当前 state.
 
-        该观测包含自车 + 最近若干辆周车的 relative x/y/vx/vy 等特征,
-        比“按绝对 x 距离取最近 3 辆车”更适合避撞和车道决策.
+        - with_goal=False: 保持 highway_env 相对 Kinematics 观测, shape=(1,112).
+        - with_goal=True:  返回 [ego_abs(7), around_rel(15*7), goal(7)], shape=(1,119).
+            其中 around_rel 与 SAC 模式保持完全一致, 使用 highway_env 的相对观测.
         """
-        obs = np.nan_to_num(np.asarray(self.observation_type.observe(), dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         if not self._config.with_goal:
+            obs = np.nan_to_num(
+                np.asarray(self.observation_type.observe(), dtype=np.float32),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            )
             return torch.from_numpy(obs).flatten().unsqueeze(0).cpu()
-        else:
-            obs_with_goal = np.concatenate([obs, self.GOAL], axis=0)
-            return torch.from_numpy(obs_with_goal).flatten().unsqueeze(0).cpu()
+
+        # goal 模式: ego 使用绝对特征, 周车沿用 highway_env 的相对特征.
+        kin = np.nan_to_num(
+            np.asarray(self.observation_type.observe(), dtype=np.float32),
+            nan=0.0, posinf=0.0, neginf=0.0,
+        )
+        ego = self._vehicle_kinematic(self._ego_vehicle).reshape(1, 7)
+        around_rel = kin[1:].reshape(-1, 7)
+        if around_rel.shape[0] < self._config.surround_count:
+            pad = np.zeros((self._config.surround_count - around_rel.shape[0], 7), dtype=np.float32)
+            around_rel = np.concatenate([around_rel, pad], axis=0)
+        goal = self.GOAL.cpu().numpy().reshape(1, 7)
+        state = np.concatenate([ego, around_rel, goal], axis=0)  # (17,7)
+        return torch.from_numpy(state).flatten().unsqueeze(0).cpu()
+
+    def _vehicle_kinematic(self, vehicle) -> np.ndarray:
+        """将车辆状态转换为 [presence,x,y,vx,vy,cos_h,sin_h] 绝对归一化特征."""
+        if vehicle is None:
+            return np.zeros(7, dtype=np.float32)
+        vx = float(vehicle.velocity[0])
+        vy = float(vehicle.velocity[1])
+        return np.array(
+            [
+                1.0,
+                float(vehicle.position[0]) / 2000.0,
+                float(vehicle.position[1]) / 12.0,
+                vx / 80.0,
+                vy / 80.0,
+                float(np.cos(vehicle.heading)),
+                float(np.sin(vehicle.heading)),
+            ],
+            dtype=np.float32,
+        )
+
     @property
     def terminated(self) -> Tensor:
         """终止标志, 1表示成功, 0表示未终止, -1表示失败"""
@@ -210,6 +245,32 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         # 手动将方向盘的角度限制在一个较小的角度内
         action[1] *= 0.1
 
+        if self._config.with_goal:
+            # goal-conditioned 模式: 由 HighwayReward 统一计算 reward, 保证 rollout 与 HER relabel 一致.
+            prev_state = self._get_observation.cpu()
+            _, _, _, truncated, _ = HighwayEnv.step(self, action.cpu().numpy())
+            next_state = self._get_observation.cpu()
+
+            reward_tensor, _ = self._reward_fn(
+                state=prev_state,
+                next_state=next_state,
+                original_done=self.terminated,
+            )
+            reward = float(reward_tensor.detach().cpu().flatten()[0].item())
+
+            # 超车事件奖励属于非马尔可夫项, 保留在环境中计算.
+            behind = sum(1 for v in self._surrounding_vehicles
+                         if float(v.position[0]) < float(self._ego_vehicle.position[0]))
+            if behind > self._passed_vehicle:
+                reward += 10.0 * (behind - self._passed_vehicle)
+                self._passed_vehicle = behind
+
+            if not np.isfinite(reward):
+                reward = 0.0
+
+            return next_state, tensor(reward).cpu(), self.terminated.cpu(), truncated, {}
+
+        # 非 goal-conditioned 模式: 直接在环境中计算 reward.
         prev_phi = self._lane_gap_potential()
         _, reward, _, truncated, _ = HighwayEnv.step(self, action.cpu().numpy())
 

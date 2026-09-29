@@ -711,6 +711,16 @@ class AgentModelSolver(ModelSolver):
             step (int | None, optional): 预训练多少条轨迹. Defaults to None.
             method (Literal[&quot;random&quot;, &quot;model_based&quot;], optional): 预训练方法. 对动作随机采样或使用模型初始参数进行采样. Defaults to "random".
         """
+        # TODO 修改replaybuffer 接口, 添加save/load 方法, 以便保存和加载经验回放池
+        # 尝试加载缓存的经验回放池, 若存在则直接使用
+        try:
+            with open(".cache/replay_buffer_warming_up.cache", "rb") as f:
+                self.replay_buffer.load(f)
+                print("加载缓存的经验回放池成功, 直接使用缓存的经验回放池")
+            return self
+        except Exception as e:
+            pass
+
         step = step or self.replay_buffer_config.minimal_capacity
         shape = torch.zeros(self.replay_buffer.config.action_dim).reshape(-1)
         ob, r, terminated, truncated, info = self.environment.reset()
@@ -729,6 +739,9 @@ class AgentModelSolver(ModelSolver):
             self.replay_buffer.append(ob, action,r,next_ob, terminated)
             ob = next_ob
 
+        # 若使用随机采样, 则在训练完成后保存, 以便下一次训练直接使用
+        if method == "random":
+            self.replay_buffer.save(".cache/replay_buffer_warming_up.cache")
         return self
 
     def train(self, print_interval: int = 0, method: Literal["behavior_cloning", "ddpg", "sac", "td3","irl"] = "behavior_cloning"):

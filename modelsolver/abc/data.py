@@ -29,6 +29,12 @@ class IDataset(ABC):
     def __len__(self) -> int: ...
     def __add__(self, other: Self) -> Self:
         raise NotImplementedError("没有为 IDataset 实现 __add__ 方法")
+    def save(self, path:str)->None:
+        """保存数据集到指定路径"""
+        raise NotImplementedError("没有为 IDataset 实现 save 方法")
+    def load(self, path:str)->None:
+        """从指定路径加载数据集"""
+        raise NotImplementedError("没有为 IDataset 实现 load 方法")
 
 
 class IDataProcesser(ABC):
