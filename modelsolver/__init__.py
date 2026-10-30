@@ -2,6 +2,7 @@
 
 # region 库导入
 import os
+import pickle
 from collections import deque
 from dataclasses import is_dataclass
 from math import floor, log
@@ -391,6 +392,9 @@ class ModelSolver(Container):
         for k in r:
             del paras[k]
 
+        with open(f"{directory}/{self.model.name_for_save}.stats", "wb") as f:
+            pickle.dump(self.stats, f)
+
         save(paras, f"{directory}/{self.model.name_for_save}.pth")
 
     def load_model(self, path: str):
@@ -714,9 +718,9 @@ class AgentModelSolver(ModelSolver):
         # TODO 修改replaybuffer 接口, 添加save/load 方法, 以便保存和加载经验回放池
         # 尝试加载缓存的经验回放池, 若存在则直接使用
         try:
-            with open(".cache/replay_buffer_warming_up.cache", "rb") as f:
-                self.replay_buffer.load(f)
-                print("加载缓存的经验回放池成功, 直接使用缓存的经验回放池")
+
+            self.replay_buffer.load(".cache/replay_buffer_warming_up.cache")
+            print("加载缓存的经验回放池成功, 直接使用缓存的经验回放池")
             return self
         except Exception as e:
             pass
@@ -1129,23 +1133,31 @@ class AgentModelSolver(ModelSolver):
         pass
 
     @no_grad()
-    def evalute_on_environment(self,)->tuple[list[torch.Tensor], float, float]:
+    def evalute_on_environment(self, path, count = 1)->dict[str, list]:
         """在环境上评估模型, 绘制模型在环境中的表现
 
         Returns:
             评估结果 (tuple[list[torch.Tensor], float, float]): 状态链, 总回报, 是否成功
         """
         self.model.eval()
-        ob, r, done, timeout, info = self.environment.reset()
-        ob_list = []
-        total_reward = r.item()
-        timeout = False
-        while not done.abs().bool() and not timeout:
-            action = self.model(ob.cuda())
-            ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
-            ob_list.append(ob)
-            total_reward += reward.item()
-        return ob_list, total_reward, done.item()
+        result = {"OB": [], "R": [], "D": []}
+        for i in range(count):
+            print(f"评估 [{i+1}/{count}]...", end="\r")
+            ob, r, done, timeout, info = self.environment.reset()
+            ob_list = []
+            total_reward = r.item()
+            timeout = False
+            while not done.abs().bool() and not timeout:
+                action = self.model(ob.cuda())
+                ob, reward, done, timeout, info = self.environment.step(action.cpu().detach())  # type: ignore
+                ob_list.append(ob)
+                total_reward += reward.item()
+            result["OB"].append(ob_list)
+            result["R"].append(total_reward)
+            result["D"].append(done.item())
+        with open(f"{path}/{self.model.name_for_save}.eval", "wb") as f:
+            pickle.dump(result, f)
+        return result
 
     def _init_stats(self) -> AgentStatistics:
         return {

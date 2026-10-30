@@ -67,7 +67,7 @@ class ContinuousHighwayEnvironment(IEnvironment,HighwayEnv):
         self._reward_fn = reward
         self._passed = 0
         self._passed_vehicle = 0
-        HighwayEnv.__init__(self, config=default_config, render_mode="human")
+        HighwayEnv.__init__(self, config=default_config, render_mode="human")  # type: ignore
 
     # region properties, easy access way.
     @property

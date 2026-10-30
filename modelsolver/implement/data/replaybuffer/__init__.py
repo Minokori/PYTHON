@@ -1,5 +1,6 @@
 """经验回放池的实现"""
 import logging
+import pickle
 from collections import deque
 from typing import Self
 
@@ -125,4 +126,9 @@ class DefaultReplayBuffer(IReplayBuffer):
         self._done_buffer: deque[Tensor] = deque(maxlen=self._config.capacity)
         """终止标志 done 的缓冲区"""
 
+
+    def save(self, path: str) -> None:
+        path = path if path.endswith(".pkl") else path + ".pkl"
+        with open(path, "wb") as f:
+            pickle.dump({"state": self._state_buffer, "action": self._action_buffer, "reward": self._reward_buffer, "next_state": self._next_state_buffer, "done": self._done_buffer}, f)
 # endregion
